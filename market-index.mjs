@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import {commandAction, commandError, commandResult} from './command-result.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const iconBytes = fs.readFileSync(new URL('./icon.svg', import.meta.url));
@@ -137,16 +138,13 @@ export function registerMarket(ctx, { home, config = {} }) {
       handler: async () => {
         try {
           const result = await listed();
-          return {
-            kind: 'success',
-            text: ['**民事法律关系本体 · 插件市场**',
-              '索引地址　' + (state.url || '（Web 服务尚未就绪）'),
-              '索引路由　' + (state.route ? '已注册' : '未注册'),
-              '本机版本　' + pkg.version + '。市场条目　' + pkg.name + '@' + MARKET_VERSION + '（提交 ' + GIT_COMMIT.slice(0, 7) + '）',
-              result.ok ? (result.added ? '已加入插件市场的索引源。' : '已在插件市场的索引源中，可在「发现」页搜索"民事"或"本体"。') : '未能写入索引源：' + result.reason,
-              '本机已安装的版本在市场中标为已安装；其他机器安装会克隆 ' + GIT_URL].join('\n')
-          };
-        } catch (e) { return { kind: 'error', text: e.message }; }
+          const summary=result.ok?(result.added?'已将本体加入本机插件市场索引。':'本体已列入本机插件市场索引。'):'插件市场尚未登记本体索引。';
+          const details=['本机市场入口'+(state.route?'已就绪。':'尚未就绪。'),
+            '本机版本　'+pkg.version+'。市场版本　'+MARKET_VERSION+'。',
+            result.ok?'可在插件市场「发现」页搜索“民事”或“本体”。':('未能写入索引源：'+result.reason)];
+          return commandResult({title:'本体插件市场',summary,details,
+            actions:[commandAction('重新检查索引','/civil-market'),commandAction('本体工作台','/civil')]},result.ok?'success':'error');
+        } catch (e) { return commandError('本体插件市场',e,[commandAction('重新检查索引','/civil-market')]); }
       }
     });
   });

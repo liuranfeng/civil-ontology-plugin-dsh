@@ -1,15 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { renderOntology } from './ontology-view.mjs';
+import { commandAction, commandError, commandResult } from './command-result.mjs';
 
 const routePath = '/civil-ontology/atlas';
+const casePath = '/civil-ontology/case/open';
 const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const atlasAction = commandAction('查看基础本体','/civil-map');
+const caseAction = commandAction('重新查看本案','/civil-map case');
+const htmlHeaders = {'content-type':'text/html; charset=utf-8','x-content-type-options':'nosniff','cache-control':'private, no-store','referrer-policy':'no-referrer','content-security-policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"};
 
-/** The atlas is entirely derived from the bundled catalog. Case data never passes this entry. */
+/** The public atlas is derived from the bundled catalog. A case export is only reachable via a user-issued, expiring link. */
 export function registerAtlas(ctx, { home, tool, experienceFor }) {
   let html, address, file;
+  const caseGrants = new Map();
+  function pruneCases() {
+    for(const [token,grant] of caseGrants)if(grant.expires<=Date.now())caseGrants.delete(token);
+  }
   const content = () => html ??= renderOntology();
   function exportFile(scopedBody) {
     if (!scopedBody && file && fs.existsSync(file)) return file;
@@ -39,14 +48,24 @@ export function registerAtlas(ctx, { home, tool, experienceFor }) {
     input:{hint:'留空查看基础本体；case 查看本案可用经验'},
     handler({agent,rawInput}={}) {
       const arg=String(rawInput||'').trim();
-      if(arg==='case'){
+      try{if(arg==='case'){
         const matched=experienceFor?.(agent?.session?.id||agent?.id);
-        if(!matched)return {kind:'success',text:'请先在本会话登记具体委托，再查看本案适用的已批准经验。'};
+        if(!matched)return commandResult({title:'本案适用的经验',summary:'请先在本会话登记具体委托，再查看本案适用的已批准经验。',actions:[caseAction,atlasAction]});
         const report=exportFile(renderOntology(matched));
-        return {kind:'success',text:'[查看本案可用经验](<'+pathToFileURL(report).href+'>)\n'+report};
+        const summary=matched.length?'本案有 '+matched.length+' 项适用的已批准经验。':'本案暂无适用的已批准经验。';
+        if(!address)return commandResult({title:'本案适用的经验',summary,details:['只读文档已生成，待 DSH 本机网页服务就绪后可以在会话打开。'],actions:[caseAction,atlasAction]});
+        pruneCases();
+        const token=randomBytes(32).toString('hex');
+        caseGrants.set(token,{report,expires:Date.now()+10*60_000});
+        const url=new URL(casePath+'/'+token,address).href;
+        return commandResult({title:'本案适用的经验',summary,actions:[{label:'打开本案关系图',href:url},caseAction,atlasAction]});
       }
-      if(arg)return {kind:'error',text:'使用 /civil-map 或 /civil-map case。'};
-      const shown = view(); return { kind: 'success', text: shown.markdown + '\n' + shown.url };
+      if(arg)throw Error('使用 /civil-map 或 /civil-map case。');
+      view();
+      return commandResult({title:'民事法律关系本体图',summary:'查看民事法律关系、请求权和相互关联的知识依据。',
+        details:address?[]:['待 DSH 本机网页服务就绪后，可重新查看本体图。'],
+        actions:[...(address?[{label:'打开本体图',href:routePath}]:[atlasAction]),caseAction]});
+      }catch(e){return commandError(arg==='case'?'本案适用的经验':'民事法律关系本体图',e,[atlasAction,caseAction]);}
     }
   }));
   ctx.inject(['webServer'], c => {
@@ -57,10 +76,23 @@ export function registerAtlas(ctx, { home, tool, experienceFor }) {
     const bind = () => web.register({kind:'exact',path:routePath,handler(req,res){
       if (!loopback.has(req.socket?.remoteAddress) || req.headers?.host !== origin.host) {res.writeHead(403);res.end();return;}
       if (!['GET','HEAD'].includes(req.method)) {res.writeHead(405,{'allow':'GET, HEAD'});res.end();return;}
-      res.writeHead(200,{'content-type':'text/html; charset=utf-8','x-content-type-options':'nosniff','cache-control':'private, no-store','referrer-policy':'no-referrer','content-security-policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"});
+      res.writeHead(200,htmlHeaders);
       res.end(req.method === 'HEAD' ? undefined : content());
     }});
-    if (c.effect) c.effect(bind); else bind();
+    const bindCase=()=>web.register({kind:'prefix',path:casePath,handler(req,res){
+      const failure=(code,text)=>{res.writeHead(code,{'content-type':'text/plain; charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'});res.end(text);};
+      if(!loopback.has(req.socket?.remoteAddress)||req.headers?.host!==origin.host)return failure(403,'请从 DSH 本机会话打开。');
+      if(req.method!=='GET')return failure(405,'请从会话卡片打开本案关系图。');
+      const match=new URL(req.url,origin).pathname.match(/^\/civil-ontology\/case\/open\/([a-f0-9]{64})$/);
+      pruneCases();
+      const grant=match&&caseGrants.get(match[1]);
+      if(!grant)return failure(410,'本案关系图入口已失效，请回到原会话点击“重新查看本案”。');
+      if(req.headers['sec-fetch-mode']!=='navigate'||!['none','same-origin'].includes(req.headers['sec-fetch-site'])||req.headers['sec-fetch-dest']!=='document'||req.headers['sec-fetch-user']!=='?1')
+        return failure(403,'请本人在 DSH 会话卡片中点击“打开本案关系图”。');
+      if(!fs.existsSync(grant.report))return failure(410,'本案文档已过期，请回到原会话重新查看本案。');
+      caseGrants.delete(match[1]);res.writeHead(200,htmlHeaders);res.end(fs.readFileSync(grant.report));
+    }});
+    if(c.effect){c.effect(bind);c.effect(bindCase);}else{bind();bindCase();}
     address = new URL(routePath,origin).href;
   });
 }

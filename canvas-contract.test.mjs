@@ -53,9 +53,11 @@ test('仅本案画布包含匹配的已采纳摘要，资料源投影不暴露�
 
 test('市场列出与插件匹配的发布版本并保留上一版独立来源',()=>{
   const pkg=JSON.parse(fs.readFileSync(new URL('./package.json',import.meta.url)));
-  assert.equal(pkg.version,'1.0.1');
   const versions=buildIndex({}).plugins[0].versions;
-  assert.deepEqual(versions.map(v=>v.version),[pkg.version,'1.0.0']);
-  assert.notEqual(versions[0].source.commit,versions[1].source.commit);
-  assert.match(versions[0].source.commit,/^[0-9a-f]{40}$/);
+  const numbers=versions.map(v=>v.version);
+  assert.deepEqual(numbers,[...new Set(numbers)].sort((a,b)=>b.localeCompare(a,'en',{numeric:true})));
+  assert.ok(pkg.version.localeCompare(numbers[0],'en',{numeric:true})>=0);
+  for (const previous of ['1.0.2','1.0.1','1.0.0']) assert.ok(numbers.includes(previous));
+  for (const entry of versions) assert.match(entry.source.commit,/^[0-9a-f]{40}$/);
+  assert.equal(new Set(versions.map(v=>v.source.commit)).size,versions.length);
 });

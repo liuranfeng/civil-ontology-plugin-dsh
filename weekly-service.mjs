@@ -50,7 +50,7 @@ export function registerWeekly(ctx,{home,listProposals}){
     const markdown=['**本体周报**　'+snap.period.start+' 至 '+snap.period.end+'，本期 '+snap.cards.length+' 项提案。',
       url?'[打开本期画布并取舍]('+url+')':'在 DSH 会话输入 /civil-digest，即可打开本人审阅画布。',
       '只读归档　'+file].join('\n\n');
-    return {id:snap.id,markdown,file,...(url?{url}:{})};
+    return {id:snap.id,period:snap.period,count:snap.cards.length,markdown,file,...(url?{url}:{})};
   }
   async function handler(req,res){
     clean();

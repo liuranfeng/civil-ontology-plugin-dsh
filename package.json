@@ -1,6 +1,6 @@
 {
   "name": "civil-ontology-dsh",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "main": "index.mjs",
   "exports": {
@@ -31,7 +31,9 @@
     "client": {
       "platform": "web",
       "inject": [
-        "betterSidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-commands"
       ],
       "external": [
         "react"

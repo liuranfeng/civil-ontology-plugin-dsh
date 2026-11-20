@@ -80,7 +80,7 @@ export function apply(ctx,config={}) {
   }
   const store={...originalStore,get:sid=>verifiedExisting(originalStore.get(sid)),open:(...args)=>verifiedExisting(originalStore.open(...args))};
   const memory=makeMemory(stateRoot());
-  const memoryApi=registerMemory(ctx,{home:stateRoot(),memory,tool,session,store,config:{...config,capture:methodEnabled&&config.capture!==false}});
+  const memoryApi=registerMemory(ctx,{home:stateRoot(),memory,tool,session,store,methodEnabled,config:{...config,capture:methodEnabled&&config.capture!==false}});
   registerAtlas(ctx,{home:stateRoot(),tool,experienceFor:sid=>{
     if(!sid||!methodEnabled)return null;
     const row=store.get(sid);
@@ -203,13 +203,6 @@ export function apply(ctx,config={}) {
       const e=c.evidence||{};
       return {markdown:['**采购审查经验的取舍意见**',c.observation,c.reason,'支持事项 '+(e.support?.length||0)+' 笔，反例 '+(e.counter?.length||0)+' 笔，复核事项 '+(e.regression?.length||0)+' 笔。',c.state==='published'?'法务已经确认适用范围。':'等待取得足够材料并由法务本人确认。'].filter(Boolean).join('\n\n')};
     }));
-  ctx.inject(['commands'], commandContext=>{
-    if(methodEnabled)commandContext.commands.register({name:'civil-confirm',description:'查看当前逐项取舍入口。',handler(){
-      return {kind:'success',text:'请使用 /civil-digest 打开本期周报，在提案卡上核对证据后逐项取舍。'};
-    }});
-    commandContext.commands.register({name:'procurement-confirm',description:'查看采购经验的逐项取舍入口。',
-      handler(){return {kind:'success',text:'采购经验请通过 /civil-digest 逐项核对原案、相似案与反例；旧回执保留供核查。'};}});
-  });
   registerMarket(ctx,{home:stateRoot(),config});
 }
 export default {name,inject,apply};

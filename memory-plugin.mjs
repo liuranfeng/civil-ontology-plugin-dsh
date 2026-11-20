@@ -4,6 +4,7 @@ import {captureText,textOf,segments,classify,feedbackTarget,attachments,packetSc
 import {TAGS,digestKey,readJSON,saveJSON} from './memory-store.mjs';
 import {collectProposals,verifiedProposal} from './memory-digest.mjs';
 import {registerWeekly} from './weekly-service.mjs';
+import {commandAction, commandError, commandResult} from './command-result.mjs';
 
 export {captureText};
 export const WEEKLY_TITLE='民事本体周报';
@@ -24,7 +25,7 @@ function splitFeedback(text){
     if(out.length&&classify(val).action==='提问或陈述')out[out.length-1]+=val;else out.push(val);}
   return out;
 }
-export function registerMemory(ctx,{home,memory,tool,session,store,config={}}){
+export function registerMemory(ctx,{home,memory,tool,session,store,config={},methodEnabled=true}){
   const root=memory.root,settingsFile=path.join(home,'memory','weekly.json'),cursorFile=path.join(root,'schedule-cursor.json');
   const settings=()=>({...defaults,...readJSON(settingsFile,{})});
   const runtime=new Map();
@@ -129,24 +130,60 @@ export function registerMemory(ctx,{home,memory,tool,session,store,config={}}){
   }));
   ctx.tools.register(tool('civil_memory_status','查看周报安排和审阅入口。',{},[],()=>({markdown:status()})));
   if(typeof ctx.inject==='function')ctx.inject(['commands'],c=>{
-    const register=(name,description,run,input)=>c.commands.register({name,description,...(input?{input:{hint:input}}:{}),handler:async ctx=>{
-      try{return {kind:'success',text:await run(ctx)};}catch(e){return {kind:'error',text:e.message};}
-    }});
-    register('civil','查看民事本体和周报安排。',status);
-    register('civil-digest','打开本人当期周报、历史清单或往期画布。',({agent,rawInput})=>{
-      const sessionId=sidOf(agent),arg=String(rawInput||'').trim();
-      if(arg==='history'){const rows=weekly.history(sessionId);return rows.map(r=>r.period.start+' 至 '+r.period.end+'　'+r.count+' 项　/civil-digest '+r.id).join('\n')||'暂无历史周报。';}
+    const action=commandAction;
+    const digest=action('本期周报','/civil-digest'),history=action('历史周报','/civil-digest history');
+    const schedule=action('周报时间','/civil-week'),atlas=action('查看本体图','/civil-map');
+    const register=(name,title,description,run,hint,actions=[])=>c.commands.register({
+      name,description,...(hint?{input:{hint}}:{}),handler:async(context={})=>{
+        try{return await run(context);}catch(e){return commandError(title,e,actions);}
+      }
+    });
+    const scheduleData=()=>{const s=settings();return {enabled:s.enabled,time:s.time.slice(0,5)};};
+    register('civil','本体工作台','查看民事本体、周报和审阅入口。',()=>
+      commandResult({title:'民事法律关系本体',summary:'查看民事法律关系，或在本期周报中逐项审阅跨案经验。',schedule:scheduleData(),
+        actions:[atlas,action('查看本案经验','/civil-map case'),digest,history,schedule,action('插件市场','/civil-market')]}));
+
+    function weeklyCard(title,agent,snapshotId) {
+      const sessionId=sidOf(agent);
+      if(!sessionId)throw Error('请在 DSH 会话内打开周报，以便把审阅操作记在本人的会话下。');
+      const report=weekly.open({sessionId,human:true,...(snapshotId?{snapshotId}:{})});
+      const period=report.period.start+' 至 '+report.period.end;
+      const summary=period+'，共 '+report.count+' 项提案。';
+      const details=report.url?['点击打开画布后，先查看提案关联的会话和证据，再逐项取舍。'] :
+        ['只读归档已生成。待 DSH 本机网页服务就绪后，点击重新获取审阅入口。'];
+      const actions=[...(report.url?[{label:'打开画布并逐项取舍',href:report.url}]:[]),
+        action('重新获取审阅入口','/civil-digest'+(snapshotId?' '+snapshotId:'')),history];
+      return commandResult({title,summary,details,actions});
+    }
+    register('civil-digest','本体周报','打开本人当期周报、历史清单或往期画布。',({agent,rawInput})=>{
+      const arg=String(rawInput||'').trim();
+      if(arg==='history'){
+        const sid=sidOf(agent);
+        if(!sid)throw Error('请在 DSH 会话内查看本人的历史周报。');
+        const reports=weekly.history(sid).map(r=>({id:r.id,label:r.period.start+' 至 '+r.period.end+'　'+r.count+' 项'}));
+        const summary=reports.length?'可查看 '+reports.length+' 份周报。':'暂无历史周报。';
+        return commandResult({title:'历史周报',summary,reports,actions:[digest]});
+      }
       if(arg&&!/^w-[a-f0-9]{32}$/.test(arg))throw Error('使用 /civil-digest、/civil-digest history，或从往期清单选择编号。');
-      return weekly.open({sessionId,human:true,...(arg?{snapshotId:arg}:{})}).markdown;
-    },'history 或往期编号，可留空');
-    register('civil-week','设置每周五的报告时间。',({rawInput})=>{
-      const s=String(rawInput||'').trim();if(!s)return status();
-      const cfg=settings();
-      if(s==='off'){saveJSON(settingsFile,{...cfg,enabled:false});return status();}
-      if(!/^([01]?\d|2[0-3]):[0-5]\d$/.test(s))throw Error('请填写 24 小时制时间，如 18:30。');
-      const time=s.padStart(5,'0')+':00';saveJSON(settingsFile,{...cfg,time,enabled:true});saveJSON(cursorFile,{last:scheduleStamp(new Date(),time)});return status();
-    },'HH:mm 或 off');
-    for(const n of ['civil-apply','civil-drop'])register(n,'在本人周报画布逐项取舍。',()=> '请使用 /civil-digest 打开当期画布，逐项查看证据并取舍。');
+      return weeklyCard(arg?'往期本体周报':'本期本体周报',agent,arg);
+    },'history 或往期编号，可留空',[digest,history]);
+    register('civil-week','周报时间','查看或设置每周五的报告时间。',({rawInput})=>{
+      const s=String(rawInput||'').trim(),cfg=settings();
+      if(s==='off')saveJSON(settingsFile,{...cfg,enabled:false});
+      else if(s){
+        if(!/^([01]?\d|2[0-3]):[0-5]\d$/.test(s))throw Error('请填写 24 小时制时间，如 18:30。');
+        const time=s.padStart(5,'0')+':00';saveJSON(settingsFile,{...cfg,time,enabled:true});saveJSON(cursorFile,{last:scheduleStamp(new Date(),time)});
+      }
+      const saved=scheduleData(),summary=s?(saved.enabled?'已保存周报生成时间。':'已关闭周报定时生成。'):'可以调整生成时间，或暂停定期周报。';
+      return commandResult({title:'周报时间',summary,schedule:saved,actions:[digest]});
+    },'HH:mm 或 off',[schedule]);
+    const reviewCommands=[
+      ['civil-apply','查看待采纳提案'],['civil-drop','查看待取舍提案'],
+      ...(methodEnabled?[['civil-confirm','确认跨案经验']]:[]),
+      ['procurement-confirm','确认采购经验']
+    ];
+    for(const [name,title] of reviewCommands)register(name,title,'打开周报，在提案卡上逐项核对证据并确认。',
+      ({agent})=>weeklyCard(title,agent),undefined,[digest,history]);
   });
   return {ensureWeekly:async()=>{safeSchedule();return {ok:true};},isCivilContext:sid=>Boolean(sid&&ctxFor(sid).civil),bindCase,guidanceFor,addVerifiedExperience,
     digest:weekly.open,status,scheduled,readView:weekly.readView};
