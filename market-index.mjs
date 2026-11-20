@@ -51,64 +51,73 @@ export function buildIndex({ origin }) {
 }
 
 export function registerMarket(ctx, { home, config = {} }) {
-  if (typeof ctx.get !== 'function') return { ok: false, reason: '宿主未提供可选服务查找' };
-  const web = ctx.get('webServer');
-  if (!web) return { ok: false, reason: '宿主未启用 Web 服务' };
-  const origin = web.getOrigin();
-  const url = origin + INDEX_PATH;
-  const document = buildIndex({ origin });
-
-  const route = {
-    kind: 'exact',
-    path: INDEX_PATH,
-    handler: (_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
-      res.end(JSON.stringify(document));
-    }
+  const statusFile = path.join(home, 'memory', 'market-status.json');
+  const marker = path.join(home, 'memory', MARKER);
+  const state = { url: null, market: undefined, route: false };
+  const note = payload => {
+    try {
+      fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+      fs.writeFileSync(statusFile, JSON.stringify({ at: new Date().toISOString(), url: state.url, route: state.route, ...payload }, null, 2));
+    } catch { /* 诊断信息写入失败不影响插件 */ }
   };
-  // 路由必须挂在本插件的 effect 上，否则停用插件后仍占着路径，再次启用会报重复路由。
-  try {
-    if (typeof ctx.effect === 'function') ctx.effect(() => web.register(route));
-    else web.register(route);
-  } catch (error) {
-    if (!/duplicate exact route/i.test(String(error?.message || error))) throw error;
+
+  if (typeof ctx.inject !== 'function') {
+    note({ ok: false, reason: '宿主未提供 inject' });
+    return { ok: false, reason: '宿主未提供 inject' };
   }
 
-  /** 把本机索引源写入插件市场；服务可能晚于本插件挂载，故用 inject 等待而不是一次性 get。 */
   const addIndex = async market => {
+    const url = state.url;
+    if (!url) return { ok: false, reason: '索引地址尚未就绪' };
     const urls = market.listIndexes().map(x => x.url);
     if (urls.includes(url)) return { ok: true, url, already: true };
     await market.setIndexes([...urls, url]);
     return { ok: true, url, added: true };
   };
-  let marketService;
+
   const listed = async () => {
-    const market = marketService || (typeof ctx.get === 'function' ? ctx.get('pluginMarket') : undefined);
-    if (!market) return { ok: false, reason: '宿主未启用插件市场服务' };
+    const market = state.market;
+    if (!market) return { ok: false, reason: '插件市场服务尚未就绪' };
     return addIndex(market);
   };
 
-  const marker = path.join(home, 'memory', MARKER);
-  const statusFile = path.join(home, 'memory', 'market-status.json');
-  const note = (payload) => {
-    try {
-      fs.mkdirSync(path.dirname(statusFile), { recursive: true });
-      fs.writeFileSync(statusFile, JSON.stringify({ at: new Date().toISOString(), url, ...payload }, null, 2));
-    } catch { /* 诊断信息写入失败不影响插件 */ }
-  };
-  const register = market => {
-    marketService = market;
-    if (config.marketIndex === false || fs.existsSync(marker)) return;
-    addIndex(market).then(result => {
-      note(result);
-      if (result.ok) {
-        fs.mkdirSync(path.dirname(marker), { recursive: true });
-        fs.writeFileSync(marker, JSON.stringify({ url, at: new Date().toISOString(), pkg: pkg.name, version: pkg.version }, null, 2));
+  // Web 服务与市场服务都可能晚于本插件挂载，因此用 inject 等待，而不是一次性 get。
+  ctx.inject(['webServer'], webCtx => {
+    const web = webCtx.webServer;
+    const origin = web.getOrigin();
+    state.url = origin + INDEX_PATH;
+    const document = buildIndex({ origin });
+    const route = {
+      kind: 'exact',
+      path: INDEX_PATH,
+      handler: (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+        res.end(JSON.stringify(document));
       }
-    }).catch(error => note({ ok: false, error: String(error?.message || error), code: error?.code, kind: error?.name }));
-  };
-  if (typeof ctx.inject === 'function') ctx.inject(['pluginMarket'], marketCtx => register(marketCtx.pluginMarket));
-  else listed().catch(() => {});
+    };
+    // 路由挂在本插件的 effect 上，停用插件时才会让出路径。
+    try {
+      if (typeof webCtx.effect === 'function') webCtx.effect(() => web.register(route));
+      else web.register(route);
+      state.route = true;
+      note({ ok: true, url: state.url, route: true });
+    } catch (error) {
+      if (!/duplicate exact route/i.test(String(error?.message || error))) throw error;
+      note({ ok: true, url: state.url, route: false, reason: 'route already registered' });
+    }
+
+    webCtx.inject(['pluginMarket'], marketCtx => {
+      state.market = marketCtx.pluginMarket;
+      if (config.marketIndex === false || fs.existsSync(marker)) return;
+      addIndex(state.market).then(result => {
+        note(result);
+        if (result.ok) {
+          fs.mkdirSync(path.dirname(marker), { recursive: true });
+          fs.writeFileSync(marker, JSON.stringify({ url: state.url, at: new Date().toISOString(), pkg: pkg.name, version: pkg.version }, null, 2));
+        }
+      }).catch(error => note({ ok: false, url: state.url, error: String(error?.message || error), code: error?.code, kind: error?.name }));
+    });
+  });
 
   ctx.inject(['commands'], commandContext => {
     commandContext.commands.register({
@@ -119,15 +128,16 @@ export function registerMarket(ctx, { home, config = {} }) {
           return {
             kind: 'success',
             text: ['**民事法律关系本体 · 插件市场**',
-              '索引源　' + url,
-              '条目　' + pkg.name + '@' + pkg.version,
+              '索引地址　' + (state.url || '（Web 服务尚未就绪）'),
+              '索引路由　' + (state.route ? '已注册' : '未注册'),
+              '市场条目　' + pkg.name + '@' + pkg.version + '（git 源，提交 ' + GIT_COMMIT.slice(0, 7) + '）',
               result.ok ? (result.added ? '已加入插件市场的索引源。' : '已在插件市场的索引源中，可在「发现」页搜索"民事"或"本体"。') : '未能写入索引源：' + result.reason,
-              '公开分发仍需把包发布到 npm（需要账号令牌）或以上架 git 仓库；本机已安装的版本在市场中标为已安装。'].join('\n')
+              '本机已安装的版本在市场中标为已安装；其他机器安装会克隆 ' + GIT_URL].join('\n')
           };
         } catch (e) { return { kind: 'error', text: e.message }; }
       }
     });
   });
 
-  return { ok: true, url, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex').slice(0, 12) };
+  return { ok: true, url: state.url, digest: createHash('sha256').update(JSON.stringify(buildIndex({ origin: state.url || '' }))).digest('hex').slice(0, 12) };
 }
