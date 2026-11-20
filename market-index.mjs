@@ -8,6 +8,10 @@ const ICON = 'data:image/svg+xml;base64,' + iconBytes.toString('base64');
 const INDEX_PATH = '/civil-ontology/market/index.json';
 const MARKER = '.market-registered.json';
 
+/** 分发源：公开 git 仓库，锁定到包含本版本的提交。改版本时同步更新 GIT_COMMIT。 */
+const GIT_URL = 'https://github.com/liuranfeng/civil-ontology-plugin-dsh.git';
+const GIT_COMMIT = '3f6c06748e7e0f36698953734766b4231f45136f';
+
 const TITLE = { en: 'Civil Legal Ontology', zh: '民事法律关系本体' };
 const DESCRIPTION = {
   en: 'One civil-law ontology for contract review, legal advice and case research, plus a weekly confirmed write-back of facts, results, methods and trade-offs.',
@@ -39,7 +43,7 @@ export function buildIndex({ origin }) {
       versions: [{
         version: pkg.version,
         publishTimestamp: Math.floor(Date.parse('2026-11-20T00:00:00Z') / 1000),
-        source: { type: 'npm' },
+        source: { type: 'git', url: GIT_URL, commit: GIT_COMMIT },
         engines: { dsh: '*' }
       }]
     }]
