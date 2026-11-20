@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="民事法律关系本体">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b3a5c"/>
+      <stop offset="1" stop-color="#0f2237"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#bg)"/>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="none" stroke="#d8b464" stroke-opacity="0.55" stroke-width="1.5"/>
+  <g fill="none" stroke="#e8c877" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 15v26"/>
+    <path d="M20 41h24"/>
+    <path d="M20 47h24" stroke-opacity="0.55"/>
+    <path d="M14 22h36"/>
+    <path d="M14 22l-5 9a5.6 5.6 0 0 0 10 0z"/>
+    <path d="M50 22l-5 9a5.6 5.6 0 0 0 10 0z"/>
+    <circle cx="32" cy="15" r="2.6" fill="#e8c877"/>
+  </g>
+</svg>

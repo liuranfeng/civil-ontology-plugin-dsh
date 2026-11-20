@@ -1,0 +1,38 @@
+{
+  "name": "civil-ontology-dsh",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "description": "民事法律关系本体：合同审查、法律咨询、类案检索，并把会话中的事实、成果、技能、取舍按周确认后写回本体。",
+  "keywords": ["民事法律关系", "合同审查", "法律咨询", "类案检索", "本体", "法律"],
+  "engines": {
+    "node": ">=24.14.1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "*.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "civil/*.json",
+    "skills/*/SKILL.md",
+    "word/**",
+    "README.md",
+    "使用说明.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}
