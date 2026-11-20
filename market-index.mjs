@@ -10,9 +10,9 @@ const MARKER = '.market-registered.json';
 
 /** 分发源：公开 git 仓库，锁定到包含本版本的提交。改版本时同步更新 GIT_COMMIT。 */
 const GIT_URL = 'https://github.com/liuranfeng/civil-ontology-plugin-dsh.git';
-const GIT_COMMIT = '72c41c2134b043d047d18bce8671dabeb4a1692e';
-const MARKET_VERSION = '1.0.1';
-const PREVIOUS_COMMIT = '3f6c06748e7e0f36698953734766b4231f45136f';
+const GIT_COMMIT = '0956658003e3f63b156ed50e85e67e71b08e5e12';
+const MARKET_VERSION = '1.0.2';
+const PREVIOUS_COMMIT = '4b64477eaf9eaad30255c470326523e51cb8e759';
 
 const TITLE = { en: 'Civil Legal Ontology', zh: '民事法律关系本体' };
 const DESCRIPTION = {
@@ -48,9 +48,14 @@ export function buildIndex({ origin }) {
         source: { type: 'git', url: GIT_URL, commit: GIT_COMMIT },
         engines: { dsh: '*' }
       }, {
+        version: '1.0.1',
+        publishTimestamp: Math.floor(Date.parse('2026-11-20T07:00:00Z') / 1000),
+        source: { type: 'git', url: GIT_URL, commit: '72c41c2134b043d047d18bce8671dabeb4a1692e' },
+        engines: { dsh: '*' }
+      }, {
         version: '1.0.0',
         publishTimestamp: Math.floor(Date.parse('2026-11-20T00:00:00Z') / 1000),
-        source: { type: 'git', url: GIT_URL, commit: PREVIOUS_COMMIT },
+        source: { type: 'git', url: GIT_URL, commit: '3f6c06748e7e0f36698953734766b4231f45136f' },
         engines: { dsh: '*' }
       }]
     }]
