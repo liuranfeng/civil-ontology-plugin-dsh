@@ -58,14 +58,21 @@ export function registerMarket(ctx, { home, config = {} }) {
   const url = origin + INDEX_PATH;
   const document = buildIndex({ origin });
 
-  web.register({
+  const route = {
     kind: 'exact',
     path: INDEX_PATH,
     handler: (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify(document));
     }
-  });
+  };
+  // 路由必须挂在本插件的 effect 上，否则停用插件后仍占着路径，再次启用会报重复路由。
+  try {
+    if (typeof ctx.effect === 'function') ctx.effect(() => web.register(route));
+    else web.register(route);
+  } catch (error) {
+    if (!/duplicate exact route/i.test(String(error?.message || error))) throw error;
+  }
 
   const listed = async () => {
     const market = ctx.get('pluginMarket');
