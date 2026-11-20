@@ -17,6 +17,8 @@ const textOf = message => {
   if (!Array.isArray(content)) return '';
   return content.filter(b => b && b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n').trim();
 };
+/** 只记人输入的原话：任务投递、后台通知、命令回执都不是委托内容。 */
+export const captureText = message => (message?.source?.kind === 'user' ? textOf(message) : '');
 const idsOf = raw => {
   const value = String(raw || '').trim();
   if (!value) throw Error('请给出条目编号，或写 all 表示本期全部。');
@@ -102,8 +104,8 @@ export function registerMemory(ctx, { home, memory, tool, session, store, config
   if (config.capture !== false && typeof ctx.on === 'function') {
     ctx.on('agent/inbox/claimed', ({ agent, message } = {}) => {
       try {
-        const text = textOf(message);
-        if (!text || text.startsWith('/') || text.startsWith(WEEKLY_TITLE) || message?.source?.kind === 'schedule') return;
+        const text = captureText(message);
+        if (!text || text.startsWith('/') || text.startsWith(WEEKLY_TITLE)) return;
         memory.add({ sessionId: sessionIdOf(agent), tag: UNTAGGED, text: text.slice(0, 600) });
       } catch { /* 记录失败不影响对话 */ }
     });

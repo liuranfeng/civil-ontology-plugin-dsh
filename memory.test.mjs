@@ -8,6 +8,7 @@ import { buildDigest } from './memory-digest.mjs';
 import { writeBackOntology } from './memory-ontology.mjs';
 import { approvedForCase } from './catalog-review.mjs';
 import { makeStore } from './case-store.mjs';
+import { captureText } from './memory-plugin.mjs';
 
 const home = () => fs.mkdtempSync(path.join(os.tmpdir(), 'civil-memory-'));
 const packet = {
@@ -72,4 +73,12 @@ test('无法定位业务类型的条目只作通用注记，不写入按场景�
   const back = writeBackOntology(root, memory.confirm('all'));
   assert.equal(back.written.length, 0);
   assert.equal(back.general.length, 1);
+});
+
+test('只记录用户原话，任务投递与后台通知不进台账', () => {
+  assert.equal(captureText({ source: { kind: 'user' }, content: [{ type: 'text', text: '承租人能否要求解除' }] }), '承租人能否要求解除');
+  assert.equal(captureText({ source: { kind: 'schedule' }, content: [{ type: 'text', text: '民事本体周报：…' }] }), '');
+  assert.equal(captureText({ source: { kind: 'background-job' }, content: [{ type: 'text', text: 'background job pwsh-…' }] }), '');
+  assert.equal(captureText({ content: [{ type: 'text', text: '没有来源标记' }] }), '');
+  assert.equal(captureText(undefined), '');
 });
