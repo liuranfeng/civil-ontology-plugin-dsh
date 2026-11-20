@@ -1,6 +1,6 @@
 {
   "name": "civil-ontology-dsh",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "index.mjs",
   "exports": {
@@ -8,10 +8,18 @@
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./client": "./client.js"
   },
   "description": "民事法律关系本体、固定交互式关系图、会话回流与逐项审阅的证据画布。",
-  "keywords": ["民事法律关系", "合同审查", "法律咨询", "类案检索", "本体", "法律"],
+  "keywords": [
+    "民事法律关系",
+    "合同审查",
+    "法律咨询",
+    "类案检索",
+    "本体",
+    "法律"
+  ],
   "engines": {
     "node": ">=24.14.1"
   },
@@ -19,9 +27,19 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "betterSidebar"
+      ],
+      "external": [
+        "react"
+      ]
     }
   },
   "files": [
+    "client.js",
     "*.mjs",
     "cordis.patch.yml",
     "locale/*.json",
