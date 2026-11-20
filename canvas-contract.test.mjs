@@ -51,8 +51,11 @@ test('仅本案画布包含匹配的已采纳摘要，资料源投影不暴露�
   assert.ok(!scoped.includes('PRIVATE_BODY')&&!renderOntology().includes('逐期核对付款前提。'));
 });
 
-test('本地包不以旧提交名义声明新的远端发布',()=>{
+test('市场列出与插件匹配的发布版本并保留上一版独立来源',()=>{
   const pkg=JSON.parse(fs.readFileSync(new URL('./package.json',import.meta.url)));
   assert.equal(pkg.version,'1.0.1');
-  assert.equal(buildIndex({}).plugins[0].versions[0].version,'1.0.0');
+  const versions=buildIndex({}).plugins[0].versions;
+  assert.deepEqual(versions.map(v=>v.version),[pkg.version,'1.0.0']);
+  assert.notEqual(versions[0].source.commit,versions[1].source.commit);
+  assert.match(versions[0].source.commit,/^[0-9a-f]{40}$/);
 });
