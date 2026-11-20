@@ -1,217 +1,153 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { TAGS, UNTAGGED, weekStart } from './memory-store.mjs';
-import { buildDigest } from './memory-digest.mjs';
-import { writeBackOntology } from './memory-ontology.mjs';
+import {randomUUID} from 'node:crypto';
+import {captureText,textOf,segments,classify,feedbackTarget,attachments,packetScope,matterFingerprint} from './memory-context.mjs';
+import {TAGS,digestKey,readJSON,saveJSON} from './memory-store.mjs';
+import {collectProposals,verifiedProposal} from './memory-digest.mjs';
+import {registerWeekly} from './weekly-service.mjs';
 
-/** 定时推送给模型的固定指令：先汇总，再请用户确认。 */
-export const WEEKLY_PROMPT = '民事本体周报：请先调用 civil_memory_digest 汇总本周待确认的增量（事实、成果、技能、取舍），逐条列出编号与摘要，再用一句话请用户执行 /civil-apply 确认或 /civil-drop 舍弃。';
-export const WEEKLY_TITLE = '民事本体周报';
-const DEFAULT_WEEK = { time: '18:00:00', weekdays: [5], timeZone: 'Asia/Shanghai', enabled: true };
-const TASK_NAMES = { contract: '合同审查', consult: '法律咨询', research: '类案检索' };
-const sessionIdOf = agent => agent?.session?.id || agent?.id;
-
-const textOf = message => {
-  const content = message?.content;
-  if (typeof content === 'string') return content.trim();
-  if (!Array.isArray(content)) return '';
-  return content.filter(b => b && b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n').trim();
+export {captureText};
+export const WEEKLY_TITLE='民事本体周报';
+const defaults={time:'18:00:00',timeZone:'Asia/Shanghai',enabled:true};
+const control=/民事本体|本体(?:图|关系图|周报|画布)|周报画布/;
+const sidOf=a=>a?.session?.id||a?.id;
+const when=stamp=>Number.isFinite(stamp)?new Date(stamp).toISOString():new Date().toISOString();
+const scheduleStamp=(now,time)=>{
+  const sh=new Date(new Date(now).getTime()+8*3600e3),days=(sh.getUTCDay()+2)%7;
+  const [hours,minutes]=time.split(':').map(Number);
+  const end=Date.UTC(sh.getUTCFullYear(),sh.getUTCMonth(),sh.getUTCDate()-days,hours-8,minutes);
+  return end>+new Date(now)?end-7*86400e3:end;
 };
-/** 只记人输入的原话：任务投递、后台通知、命令回执都不是委托内容。 */
-export const captureText = message => (message?.source?.kind === 'user' ? textOf(message) : '');
-const idsOf = raw => {
-  const value = String(raw || '').trim();
-  if (!value) throw Error('请给出条目编号，或写 all 表示本期全部。');
-  if (value === 'all') return 'all';
-  const ids = value.split(/[\s,，、]+/).filter(Boolean);
-  if (!ids.length || ids.some(id => !/^m-[a-f0-9]{8}$/.test(id))) throw Error('条目编号形如 m-1a2b3c4d；也可以写 all。');
-  return ids;
-};
-
-export function registerMemory(ctx, { home, memory, tool, session, store, config = {} }) {
-  const settingsFile = path.join(home, 'memory', 'weekly.json');
-  const readWeekly = () => {
-    try { return { ...DEFAULT_WEEK, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) }; }
-    catch { return { ...DEFAULT_WEEK }; }
-  };
-  const writeWeekly = value => {
-    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
-    fs.writeFileSync(settingsFile, JSON.stringify(value, null, 2));
-    return value;
-  };
-  const describeWeek = weekly => weekly.enabled === false
-    ? '周报已关闭。'
-    : '周报时间　每周' + weekly.weekdays.map(d => '一二三四五六日'[d - 1]).join('、') + ' ' + String(weekly.time).slice(0, 5) + '（' + weekly.timeZone + '）';
-
-  async function ensureWeekly(sessionId) {
-    const weekly = readWeekly();
-    if (weekly.enabled === false) return { ok: true, disabled: true };
-    const service = typeof ctx.get === 'function' ? ctx.get('schedule') : undefined;
-    if (!service) return { ok: false, reason: '宿主未启用定时服务' };
-    const timing = { kind: 'weekly', weekly: { time: weekly.time, weekdays: weekly.weekdays, time_zone: weekly.timeZone } };
-    const existing = (await service.list({ sessionId })).find(row => typeof row.title === 'string' && row.title.startsWith(WEEKLY_TITLE));
-    if (existing) {
-      const same = existing.time === weekly.time && existing.timeZone === weekly.timeZone &&
-        JSON.stringify(existing.weekdays) === JSON.stringify(weekly.weekdays);
-      if (same) return { ok: true, unchanged: true, at: weekly };
-      await service.update({ sessionId, id: existing.id, expected: existing, change: timing });
-      return { ok: true, updated: true, at: weekly };
+function splitFeedback(text){
+  // Keep unlabelled continuations (conditions, explanations and numbers) with their preceding assertion.
+  const chunks=text.match(/[^，,；;。！？!?\n]+[，,；;。！？!?]?/g)||[text],out=[];
+  for(const chunk of chunks){const val=chunk.trim();if(!val)continue;
+    if(out.length&&classify(val).action==='提问或陈述')out[out.length-1]+=val;else out.push(val);}
+  return out;
+}
+export function registerMemory(ctx,{home,memory,tool,session,store,config={}}){
+  const root=memory.root,settingsFile=path.join(home,'memory','weekly.json'),cursorFile=path.join(root,'schedule-cursor.json');
+  const settings=()=>({...defaults,...readJSON(settingsFile,{})});
+  const runtime=new Map();
+  const weekly=registerWeekly(ctx,{home,listProposals:query=>collectProposals(memory,query)});
+  function getRow(sid){try{return store.get(sid);}catch{return null;}}
+  function ctxFor(sid){if(!runtime.has(sid))runtime.set(sid,{civil:memory.isActive(sid),episode:null,turn:null,hadOther:false});return runtime.get(sid);}
+  function bindCase(sid,packet){
+    const c=ctxFor(sid);if(config.capture===false||!c.civil||!c.episode||c.turn==null)return;
+    memory.bindCase({sessionId:sid,episode:c.episode,turn:c.turn,scope:packetScope({packet},sid),caseId:packet.id,materialFingerprint:matterFingerprint(packet)});
+  }
+  function classifyInput(sid,message,turn,{persist=true}={}){
+    if(!sid)return;
+    const text=captureText(message);if(!text||text.startsWith('/'))return;
+    const c=ctxFor(sid),was=c.follow??c.civil,files=attachments(message);
+    const intent=segments(text,was,files),matched=control.test(text);
+    if(matched&&!intent.parts.length)intent.parts=[text];
+    c.follow=matched||intent.active;c.civil=c.follow||intent.parts.length>0;c.turn=turn;
+    const entirelyCivil=intent.parts.join('').replace(/\s/g,'')===text.replace(/\s/g,'');
+    c.hadOther=c.civil&&!entirelyCivil;
+    const prior=was||memory.isActive(sid);
+    if(!c.episode||!prior){
+      const last=prior?memory.turns(sid).at(-1):null;c.episode=last?.episode||randomUUID();
     }
-    await service.create(sessionId, { title: WEEKLY_TITLE, prompt: WEEKLY_PROMPT, weekly: timing.weekly });
-    return { ok: true, created: true, at: weekly };
+    memory.saveIntent(sid,c.follow);
+    if(!c.civil||!persist||config.capture===false)return;
+    const row=getRow(sid),scope=packetScope(row,sid),history=memory.turns(sid);
+    const stamp=when(message.time),origin=message.id||message.messageId||digestKey([turn,text]);
+    const last=history.findLast(t=>t.episode===c.episode&&t.author==='用户');
+    const same=history.filter(t=>t.episode===c.episode&&(!scope.caseId||!t.caseId||scope.caseId===t.caseId));
+    const joined=intent.parts.join(''),parts=splitFeedback(joined);
+    for(const [i,part] of parts.entries()){
+      const tags=classify(part),feedback=['认可','纠正','表达要求'].includes(tags.action);
+      memory.addTurn({sessionId:sid,caseId:scope.caseId,scope,episode:c.episode,turn,seq:i,at:stamp,
+        eventKey:'user-'+origin+'-'+i,author:'用户',audience:'模型',text:part,tags,files,
+        ...(feedback?feedbackTarget(part,same,last):{}),materialFingerprint:matterFingerprint(row?.packet)});
+    }
   }
-  const ensureQuietly = sessionId => { ensureWeekly(sessionId).catch(() => {}); };
-
-  function digest({ sessionId, scope } = {}) {
-    const now = new Date();
-    const digestId = 'weekly-' + now.toISOString().slice(0, 10) + '-' + now.toISOString().slice(11, 16).replace(':', '');
-    const built = buildDigest(memory, { now, digestId, sessionId: scope === 'session' ? sessionId : undefined });
-    const saved = built.items.length ? memory.saveDigest(digestId, built.markdown) : null;
-    memory.markDigested(digestId);
-    return { ...built, saved };
+  function committed(subject,event){
+    const sid=sidOf(subject),data=event?.data;
+    if(!sid||!data||config.capture===false||!['assistant/message','deliverables/presented'].includes(event.type))return;
+    const c=ctxFor(sid);if(!c.civil||!c.episode)return;
+    // Only settle outputs belonging to the classified turn. No background jobs, private reasoning or tool arguments.
+    if(c.turn!==null&&data.turn!==undefined&&data.turn!==c.turn)return;
+    const row=getRow(sid),scope=packetScope(row,sid);
+    const common={sessionId:sid,scope,caseId:scope.caseId,episode:c.episode,turn:data.turn??c.turn,seq:event.seq,at:when(event.time),materialFingerprint:matterFingerprint(row?.packet)};
+    if(event.type==='assistant/message'){
+      let text=textOf(data.message);if(c.hadOther)text=segments(text,false).parts.join('');
+      if(text)memory.addTurn({...common,eventKey:'answer-'+event.seq,author:'模型',audience:'用户',text,tags:{action:'公开答复',nature:'成果'},version:'答复 '+event.seq});
+    }else{
+      for(const [i,f] of (data.files||[]).entries()){
+        const name=path.win32.basename(f.path||f.name||'');if(!name||c.hadOther&&!segments(name,false).parts.length)continue;
+        const desc=String(f.description||'');memory.addTurn({...common,eventKey:'file-'+event.seq+'-'+i,author:'交付',audience:'用户',display:name,text:[name,desc].filter(Boolean).join('\n'),tags:{action:'已交付',nature:'成果'},version:'交付 '+event.seq+' · '+name});
+      }
+    }
   }
-
-  function apply(ids) {
-    const done = memory.confirm(ids);
-    const back = writeBackOntology(home, done);
-    return {
-      done, back,
-      markdown: [
-        '**已确认 ' + done.length + ' 条增量**',
-        done.map(x => x.id + '　' + x.tag + '　' + x.text.slice(0, 80)).join('\n'),
-        back.written.length ? '其中 ' + back.written.length + ' 条按场景、立场、时点和业务类型写入本体，同一场景新案开案时自动带出。' : '',
-        back.general.length ? '另 ' + back.general.length + ' 条属于通用经验（无法定位到具体业务类型），已作为本体注记保存，供 civil_memory_recall 查阅。' : ''
-      ].filter(Boolean).join('\n\n')
-    };
+  function scheduled(now=new Date()){
+    const cfg=settings();if(!cfg.enabled)return [];
+    const due=scheduleStamp(now,cfg.time),cursor=readJSON(cursorFile,null);
+    if(!cursor){saveJSON(cursorFile,{last:due});return [];}
+    const reports=[];
+    for(let next=cursor.last+7*86400e3;next<=due;next+=7*86400e3){
+      reports.push(weekly.open({sessionId:'',now:new Date(next),scheduled:true}));saveJSON(cursorFile,{last:next});
+    }
+    return reports;
   }
-
-  function status(sessionId) {
-    const s = memory.summary();
-    const row = sessionId ? store.get(sessionId) : null;
-    const pending = memory.pending();
-    return [
-      '**民事法律关系本体**',
-      '已确认 ' + s.confirmed + ' 条，待确认 ' + s.pending + ' 条，不采纳 ' + s.rejected + ' 条。',
-      Object.entries(s.byTag).map(([tag, n]) => tag + ' ' + n).join('、'),
-      describeWeek(readWeekly()),
-      row ? '本会话案件　' + row.packet.id + '（' + (TASK_NAMES[row.packet.taskMode || 'contract']) + '，修订 ' + row.revision + '）' : '本会话尚未开案，提出民事法律问题时会自动启用。',
-      pending.length ? '本期待确认 ' + pending.length + ' 条，可用 /civil-digest 查看明细。' : '',
-      '用法　/civil-week 18:30 改时间、/civil-week off 关闭、/civil-digest 立即汇总、/civil-apply all 确认回写、/civil-drop 舍弃。'
-    ].filter(Boolean).join('\n');
-  }
-
-  // 自动记录用户原话，标记待归类，周报时由 Agent 补标签。
-  if (config.capture !== false && typeof ctx.on === 'function') {
-    ctx.on('agent/inbox/claimed', ({ agent, message } = {}) => {
-      try {
-        const text = captureText(message);
-        if (!text || text.startsWith('/') || text.startsWith(WEEKLY_TITLE)) return;
-        memory.add({ sessionId: sessionIdOf(agent), tag: UNTAGGED, text: text.slice(0, 600) });
-      } catch { /* 记录失败不影响对话 */ }
+  function safeSchedule(){try{scheduled();}catch(error){ctx.logger?.warn?.('本体周报生成待重试：'+error.message);}}
+  if(typeof ctx.on==='function'){
+    ctx.on('agent/inbox/claimed',({agent,message,turn}={})=>{
+      const sid=sidOf(agent);if(!sid)return;
+      if(message?.source?.kind!=='user'){const c=ctxFor(sid);if(c.turn!==turn){c.civil=false;c.turn=turn;}return;}
+      classifyInput(sid,message,turn);
     });
+    ctx.on('session/event',committed);
+    if(typeof ctx.effect==='function'){ctx.effect(()=>{safeSchedule();const t=setInterval(safeSchedule,60000);t.unref?.();return ()=>clearInterval(t);});}
   }
-
-  ctx.tools.register(tool('civil_memory_note',
-    '把本次办理中确认的事实、成果、技能或取舍连同原句记入本体台账；确认后写回本体，供同场景新案使用。',
-    {
-      tag: { type: 'string', enum: TAGS, description: '事实＝已核实的事实；成果＝交付或结论；技能＝可复用的办理方法；取舍＝放弃或保留某方案的判断。' },
-      text: { type: 'string', description: '一条可独立阅读的内容，写明主体、条件和结论。' },
-      quote: { type: 'string', description: '支持该条目的会话或材料原句，逐字摘录。' },
-      scene: { type: 'string' }, stance: { type: 'string' }, stage: { type: 'string' }, businessKind: { type: 'string' },
-      taskMode: { type: 'string', enum: ['contract', 'consult', 'research'] }
-    }, ['tag', 'text'], (args, exec) => {
-      const sid = session(exec);
-      const row = store.get(sid);
-      const packet = row?.packet || {};
-      const item = memory.add({
-        sessionId: sid, tag: args.tag, text: args.text, quote: args.quote,
-        scene: args.scene ?? packet.scene, stance: args.stance ?? packet.stance, stage: args.stage ?? packet.stage,
-        businessKind: args.businessKind ?? packet.businessKind, taskMode: args.taskMode ?? packet.taskMode,
-        caseId: packet.id
-      });
-      ensureQuietly(sid);
-      return { markdown: '已记入本体台账 **' + item.id + '**　' + item.tag + '　' + item.text, memoryId: item.id, pending: memory.summary().pending };
+  const status=()=>{const cfg=settings();return '本体周报　'+(cfg.enabled?'每周五 '+cfg.time.slice(0,5)+'（北京时间）':'定时生成已关闭')+'。本人输入 /civil-digest 审阅当期画布，/civil-week 设置时间。';};
+  function guidanceFor(packet,sid){
+    return weekly.guidanceFor(packet,sid).map(r=>({...r,type:r.kind==='presentation'?'presentation':r.kind==='fact'?'case':'legal',text:r.relation||r.title}));
+  }
+  function addVerifiedExperience(prepared,packet,sid){
+    const fallbackTitle=prepared.title||prepared.guidance?.title;
+    const proposal=verifiedProposal(home,memory,{...prepared,title:fallbackTitle},packet,sid);
+    const {updatedAt,...version}=proposal;
+    const note=memory.addSuggestion({sessionId:sid,prepared:proposal},[proposal.id,digestKey(version)]);
+    return {id:note.prepared.id,markdown:'已把「'+proposal.title+'」及案件材料列入周报待审。法务可输入 /civil-digest 查看。'};
+  }
+  ctx.tools.register(tool('civil_memory_note','仅提出候选。quote 摘引本会话中实际发生的用户或模型公开原话；关系、证据是否齐备、生效范围由本地程序核定。',
+    {tag:{type:'string',enum:TAGS},text:{type:'string'},quote:{type:'string'},title:{type:'string'},sourceId:{type:'string'}},['tag','text','quote'],(args,exec)=>{
+      const sid=session(exec);if(!ctxFor(sid).civil)throw Error('请先明确当前民事委托。');
+      const row=getRow(sid),history=memory.turns(sid).filter(t=>t.episode===ctxFor(sid).episode&&(!row||t.caseId===row.packet.id||!t.caseId));
+      const quote=String(args.quote||'').trim(),val=String(args.text||'').trim();if(quote.length<4||!val||val.length>4000)throw Error('请提供四字以上逐字来源及简明的拟议变化。');
+      const matches=history.filter(t=>t.text.includes(quote)&&(!args.sourceId||args.sourceId===t.id));
+      if(matches.length!==1)throw Error('请提供可在本会话中唯一定位的公开原句。');
+      const t=matches[0],title=(args.title||val).slice(0,100);
+      const s=memory.addSuggestion({sessionId:sid,title,text:val,anchor:t.id,tag:args.tag},[t.id,val]);
+      return {markdown:'已作为待审提议保存，后案使用范围由证据和本人取舍决定。',id:s.id};
     }));
-
-  ctx.tools.register(tool('civil_memory_digest', '汇总本期待确认增量（事实、成果、技能、取舍），生成可回查的周报文件并列出确认方式。',
-    { scope: { type: 'string', enum: ['week', 'session'], description: 'week 覆盖本周全部会话；session 只含本会话。' } }, [],
-    (args, exec) => {
-      const built = digest({ sessionId: session(exec), scope: args.scope || 'week' });
-      return { markdown: built.markdown, digestId: built.id, file: built.saved || null, count: built.items.length };
-    }));
-
-  ctx.tools.register(tool('civil_memory_apply', '把用户已确认的增量写回本体；编号用 all 表示本期全部。',
-    { ids: { type: 'string', description: 'all 或空格分隔的条目编号，如 m-1a2b3c4d。' } }, ['ids'],
-    args => apply(idsOf(args.ids))));
-
-  ctx.tools.register(tool('civil_memory_recall', '按场景查阅已写回本体的经验，用于开案前比对。',
-    { scene: { type: 'string' }, limit: { type: 'integer' } }, [],
-    args => {
-      const rows = memory.guidanceFor({ scene: args.scene || '' }, Math.min(Number(args.limit) || 8, 20));
-      return { markdown: rows.length ? rows.map(x => '**' + x.id + '**　' + x.tag + '　' + x.text + (x.quote ? '\n> 原句：' + x.quote : '')).join('\n\n') : '该场景尚无已确认的本体积淀。' };
-    }));
-
-  ctx.tools.register(tool('civil_memory_status', '查看本体台账、四类增量计数、周报时间与本会话案件。', {}, [],
-    (_args, exec) => ({ markdown: status(session(exec)) })));
-
-  ctx.inject(['commands'], commandContext => {
-    commandContext.commands.register({
-      name: 'civil', description: '民事法律关系本体：台账、周报时间与用法。',
-      handler: ({ agent }) => ({ kind: 'success', text: status(sessionIdOf(agent)) })
-    });
-    commandContext.commands.register({
-      name: 'civil-week', description: '设置本体周报时间，如 /civil-week 18:30，或 /civil-week off 关闭。',
-      input: { hint: 'HH:mm 或 off' },
-      handler: async ({ agent, rawInput }) => {
-        const value = String(rawInput || '').trim();
-        try {
-          if (!value) return { kind: 'success', text: describeWeek(readWeekly()) };
-          if (value === 'off') {
-            writeWeekly({ ...readWeekly(), enabled: false });
-            const service = typeof ctx.get === 'function' ? ctx.get('schedule') : undefined;
-            const sessionId = sessionIdOf(agent);
-            const hit = service ? (await service.list({ sessionId })).find(r => String(r.title || '').startsWith(WEEKLY_TITLE)) : null;
-            if (hit) await service.delete({ sessionId, id: hit.id });
-            return { kind: 'success', text: '已关闭周报。重新开启：/civil-week 18:30。' };
-          }
-          const match = value.match(/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
-          if (!match) throw Error('时间写成 18:30 这样的 24 小时制，或写 off。');
-          const time = String(match[1]).padStart(2, '0') + ':' + match[2] + ':00';
-          writeWeekly({ ...readWeekly(), enabled: true, time });
-          const result = await ensureWeekly(agent.id);
-          return { kind: 'success', text: (result.ok ? '周报改为每周五 ' + time + '（' + readWeekly().timeZone + '）。' : '时间已保存，但定时服务报错：' + result.reason) };
-        } catch (e) { return { kind: 'error', text: e.message }; }
-      }
-    });
-    commandContext.commands.register({
-      name: 'civil-digest', description: '立即汇总本期待确认增量，确认后写回本体。',
-      input: { hint: '可留空' },
-      handler: ({ agent }) => {
-        try {
-          const built = digest({ sessionId: agent.id, scope: 'week' });
-          return { kind: 'success', text: built.markdown + (built.saved ? '\n\n已存 ' + built.saved : '') };
-        } catch (e) { return { kind: 'error', text: e.message }; }
-      }
-    });
-    commandContext.commands.register({
-      name: 'civil-apply', description: '确认增量并写回本体，如 /civil-apply all 或 /civil-apply m-1a2b3c4d。',
-      input: { hint: 'all 或条目编号' },
-      handler: ({ rawInput }) => {
-        try { return { kind: 'success', text: apply(idsOf(rawInput)).markdown }; }
-        catch (e) { return { kind: 'error', text: e.message }; }
-      }
-    });
-    commandContext.commands.register({
-      name: 'civil-drop', description: '本次不采纳某些增量，如 /civil-drop all。',
-      input: { hint: 'all 或条目编号' },
-      handler: ({ rawInput }) => {
-        try {
-          const done = memory.reject(idsOf(rawInput));
-          return { kind: 'success', text: '已舍弃 ' + done.length + ' 条，本体台账保留记录。' };
-        } catch (e) { return { kind: 'error', text: e.message }; }
-      }
-    });
+  ctx.tools.register(tool('civil_memory_digest','生成当前会话的只读 HTML 周报。全域周报及取舍仅从本人的 /civil-digest 命令进入。',{},[],(_args,exec)=>weekly.open({scope:'session',sessionId:session(exec)})));
+  ctx.tools.register(tool('civil_memory_recall','按本案实际登记的范围查看已批准的同类经验。',{},[],(_args,exec)=>{
+    const sid=session(exec),p=getRow(sid)?.packet;const items=p?guidanceFor(p,sid):[];
+    return {markdown:items.map(r=>r.title+'　'+r.text).join('\n')||'本案尚无匹配的已采纳经验。'};
+  }));
+  ctx.tools.register(tool('civil_memory_status','查看周报安排和审阅入口。',{},[],()=>({markdown:status()})));
+  if(typeof ctx.inject==='function')ctx.inject(['commands'],c=>{
+    const register=(name,description,run,input)=>c.commands.register({name,description,...(input?{input:{hint:input}}:{}),handler:async ctx=>{
+      try{return {kind:'success',text:await run(ctx)};}catch(e){return {kind:'error',text:e.message};}
+    }});
+    register('civil','查看民事本体和周报安排。',status);
+    register('civil-digest','打开本人当期周报、历史清单或往期画布。',({agent,rawInput})=>{
+      const sessionId=sidOf(agent),arg=String(rawInput||'').trim();
+      if(arg==='history'){const rows=weekly.history(sessionId);return rows.map(r=>r.period.start+' 至 '+r.period.end+'　'+r.count+' 项　/civil-digest '+r.id).join('\n')||'暂无历史周报。';}
+      if(arg&&!/^w-[a-f0-9]{32}$/.test(arg))throw Error('使用 /civil-digest、/civil-digest history，或从往期清单选择编号。');
+      return weekly.open({sessionId,human:true,...(arg?{snapshotId:arg}:{})}).markdown;
+    },'history 或往期编号，可留空');
+    register('civil-week','设置每周五的报告时间。',({rawInput})=>{
+      const s=String(rawInput||'').trim();if(!s)return status();
+      const cfg=settings();
+      if(s==='off'){saveJSON(settingsFile,{...cfg,enabled:false});return status();}
+      if(!/^([01]?\d|2[0-3]):[0-5]\d$/.test(s))throw Error('请填写 24 小时制时间，如 18:30。');
+      const time=s.padStart(5,'0')+':00';saveJSON(settingsFile,{...cfg,time,enabled:true});saveJSON(cursorFile,{last:scheduleStamp(new Date(),time)});return status();
+    },'HH:mm 或 off');
+    for(const n of ['civil-apply','civil-drop'])register(n,'在本人周报画布逐项取舍。',()=> '请使用 /civil-digest 打开当期画布，逐项查看证据并取舍。');
   });
-
-  return { ensureWeekly, digest, status, captureSettings: readWeekly };
+  return {ensureWeekly:async()=>{safeSchedule();return {ok:true};},isCivilContext:sid=>Boolean(sid&&ctxFor(sid).civil),bindCase,guidanceFor,addVerifiedExperience,
+    digest:weekly.open,status,scheduled,readView:weekly.readView};
 }

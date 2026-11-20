@@ -1,6 +1,6 @@
 {
   "name": "civil-ontology-dsh",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "index.mjs",
   "exports": {
@@ -10,7 +10,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "description": "民事法律关系本体：合同审查、法律咨询、类案检索，并把会话中的事实、成果、技能、取舍按周确认后写回本体。",
+  "description": "民事法律关系本体、固定交互式关系图、会话回流与逐项审阅的证据画布。",
   "keywords": ["民事法律关系", "合同审查", "法律咨询", "类案检索", "本体", "法律"],
   "engines": {
     "node": ">=24.14.1"
@@ -27,6 +27,9 @@
     "locale/*.json",
     "icon.svg",
     "civil/*.json",
+    "weekly-ui/**",
+    "ontology-ui/**",
+    "canvas-lock.json",
     "skills/*/SKILL.md",
     "word/**",
     "README.md",

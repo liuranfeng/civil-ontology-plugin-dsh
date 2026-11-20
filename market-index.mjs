@@ -11,6 +11,8 @@ const MARKER = '.market-registered.json';
 /** 分发源：公开 git 仓库，锁定到包含本版本的提交。改版本时同步更新 GIT_COMMIT。 */
 const GIT_URL = 'https://github.com/liuranfeng/civil-ontology-plugin-dsh.git';
 const GIT_COMMIT = '3f6c06748e7e0f36698953734766b4231f45136f';
+// A locally packaged version is not a remote release. Keep the public entry at its published revision.
+const MARKET_VERSION = '1.0.0';
 
 const TITLE = { en: 'Civil Legal Ontology', zh: '民事法律关系本体' };
 const DESCRIPTION = {
@@ -41,7 +43,7 @@ export function buildIndex({ origin }) {
       author: '民事法律关系本体',
       metadata: { category: 'legal', keywords: ['民事', '合同审查', '法律咨询', '类案检索', '本体'], labels: ['civil', 'ontology', 'memory'], sortKeys: {} },
       versions: [{
-        version: pkg.version,
+        version: MARKET_VERSION,
         publishTimestamp: Math.floor(Date.parse('2026-11-20T00:00:00Z') / 1000),
         source: { type: 'git', url: GIT_URL, commit: GIT_COMMIT },
         engines: { dsh: '*' }
@@ -130,7 +132,7 @@ export function registerMarket(ctx, { home, config = {} }) {
             text: ['**民事法律关系本体 · 插件市场**',
               '索引地址　' + (state.url || '（Web 服务尚未就绪）'),
               '索引路由　' + (state.route ? '已注册' : '未注册'),
-              '市场条目　' + pkg.name + '@' + pkg.version + '（git 源，提交 ' + GIT_COMMIT.slice(0, 7) + '）',
+              '本机版本　' + pkg.version + '。市场条目　' + pkg.name + '@' + MARKET_VERSION + '（提交 ' + GIT_COMMIT.slice(0, 7) + '）',
               result.ok ? (result.added ? '已加入插件市场的索引源。' : '已在插件市场的索引源中，可在「发现」页搜索"民事"或"本体"。') : '未能写入索引源：' + result.reason,
               '本机已安装的版本在市场中标为已安装；其他机器安装会克隆 ' + GIT_URL].join('\n')
           };

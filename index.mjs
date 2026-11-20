@@ -8,7 +8,7 @@ import { makeCounselReport } from './counsel-view.mjs';
 import { registerWordTools } from './word-tools.mjs';
 import { registerCivilTools } from './civil-tools.mjs';
 import {caseOpeningFields,civilOpeningDescription,procurementOpeningDescription} from './case-intake.mjs';
-import {approvedForCase,prepareCatalogReview,confirmCatalogReview} from './catalog-review.mjs';
+import {approvedForCase,prepareCatalogReview} from './catalog-review.mjs';
 import { makeStore } from './case-store.mjs';
 import { validateAgentRecord } from './agent-record.mjs';
 import {registerCompany,noteBlocks} from './company-policy.mjs';
@@ -22,6 +22,7 @@ import {createCourtWebJudgmentProvider} from './judgment-provider.mjs';
 import {makeMemory} from './memory-store.mjs';
 import {registerMemory} from './memory-plugin.mjs';
 import {registerMarket} from './market-index.mjs';
+import {registerAtlas} from './atlas-entry.mjs';
 
 const skillText=name=>fs.readFileSync(new URL('./skills/'+name+'/SKILL.md',import.meta.url),'utf8').replace(/^---[\s\S]*?---\s*/,'');
 const contractGuide=skillText('word-review');
@@ -71,12 +72,32 @@ function render(store,sid,row,{alternate,execution,carryTerms=false}={}){
 }
 export function apply(ctx,config={}) {
   const methodEnabled=config?.ontology!==false&&process.env.DSH_CIVIL_METHOD!=='off';
-  const store=makeStore(stateRoot());
+  const originalStore=makeStore(stateRoot());
+  function verifiedExisting(row){
+    if(!row?.approvedGuidance?.length||row.guidanceEdition==='1.0.1')return row;
+    const allowed=new Set(approvedForCase(originalStore,row.packet).map(g=>JSON.stringify(g)));
+    return {...row,approvedGuidance:row.approvedGuidance.filter(g=>allowed.has(JSON.stringify(g)))};
+  }
+  const store={...originalStore,get:sid=>verifiedExisting(originalStore.get(sid)),open:(...args)=>verifiedExisting(originalStore.open(...args))};
   const memory=makeMemory(stateRoot());
-  const memoryApi=registerMemory(ctx,{home:stateRoot(),memory,tool,session,store,config});
-  ctx.systemPrompt.section({name:'civil-ontology:entry',order:6201,interpolate:false,text:
-    '民事法律问题默认启用民事法律关系本体：合同审查、法律咨询、类案检索和民事法律研究都先调用 civil_open_case 登记事实与材料，同一份本体贯穿三个任务。'+
-    '办理过程中用 civil_memory_note 把已核实的事实、形成的成果、可复用的技能和有理由的取舍连同原句记入台账；用户可用 /civil 查看台账、/civil-week 设周报时间、/civil-digest 立即汇总、/civil-apply 确认后写回本体。'});
+  const memoryApi=registerMemory(ctx,{home:stateRoot(),memory,tool,session,store,config:{...config,capture:methodEnabled&&config.capture!==false}});
+  registerAtlas(ctx,{home:stateRoot(),tool,experienceFor:sid=>{
+    if(!sid||!methodEnabled)return null;
+    const row=store.get(sid);
+    return row?memoryApi.guidanceFor(row.packet,sid):null;
+  }});
+  if(methodEnabled)ctx.systemPrompt.section({name:'civil-ontology:entry',order:6201,interpolate:false,text:
+    '民事概念可直接查询；具体委托使用 civil_open_case。用户要看本体图时调用 civil_open_map，直接给出工具返回的画布。周报和关系图始终由插件模板生成。仅提交有出处的结构化内容，不编写展示页面，不代替本人作取舍。'});
+  ctx.on?.('system-prompt/assemble',async(_assembly,context,next)=>{
+    const assembly=await next();
+    if(!methodEnabled)return {...assembly,tools:assembly.tools.filter(t=>!t.name.startsWith('civil_memory_')&&t.name!=='civil_open_map')};
+    const sid=context?.agent?.session?.id||context?.agent?.id;
+    if(sid&&memoryApi.isCivilContext(sid))return assembly;
+    return {...assembly,
+      sections:assembly.sections.filter(s=>!s.name.startsWith('civil-ontology:')&&!s.name.startsWith('civil-review:')),
+      tools:assembly.tools.filter(t=>!t.name.startsWith('civil_')&&t.name!=='procurement_open_case')
+    };
+  },{prepend:true});
   const router=taskRouter(ctx,{tool,session,store});
   const contract=router.target('contract');
   const consult=router.target('consult'),research=router.target('research');
@@ -86,16 +107,21 @@ export function apply(ctx,config={}) {
       modeOf(input);
       analyzeCase(input);
       const row=store.open(sid,input);
-      const approvedGuidance=methodEnabled?(row.approvedGuidance??(row.revision===0?approvedForCase(store,row.packet):[])):[];
+      if(methodEnabled)memoryApi.bindCase(sid,row.packet);
+      const recalled=methodEnabled?memoryApi.guidanceFor(row.packet,sid):[];
+      const approvedGuidance=methodEnabled?(row.approvedGuidance??(row.revision===0?
+        [...approvedForCase(store,row.packet),...recalled.filter(g=>g.type==='legal')]:[])):[];
       // Pin only at first opening; the saved records of older cases keep their original method.
       const methodBatch=row.revision===0&&methodEnabled?batch:row.methodBatch;
-      const response=render(store,sid,{...row,methodBatch,approvedGuidance,mode:methodEnabled?'on':'off'},{execution:exec,carryTerms:true});
+      const response=render(store,sid,{...row,methodBatch,approvedGuidance,guidanceEdition:'1.0.1',mode:methodEnabled?'on':'off'},{execution:exec,carryTerms:true});
       const mode=modeOf(row.packet);
       const guide=mode==='contract'?contractGuide:'';
       response.markdown += '\n\n'+[guide,router.menu(mode)].filter(Boolean).join('\n\n');
-      const recalled=memory.guidanceFor(row.packet);
-      if(recalled.length)response.markdown+='\n\n**本体已确认的同类经验**\n\n'+recalled.map(x=>'· '+x.tag+'　'+x.text).join('\n')+'\n\n与本案事实不一致的，请说明差异后再决定取舍；办理中的新增量用 civil_memory_note 记入台账。';
-      memoryApi.ensureWeekly(sid).catch(()=>{});
+      for(const [type,label] of [['case','仅限本案的核验记录'],['presentation','适用于本交付的表达偏好']]){
+        const items=recalled.filter(g=>g.type===type);
+        if(items.length)response.markdown+='\n\n**'+label+'**\n\n'+items.map(g=>'· '+g.text).join('\n');
+      }
+      if(methodEnabled)memoryApi.ensureWeekly(sid).catch(()=>{});
       return response;
     };
   ctx.tools.register(tool('procurement_open_case',procurementOpeningDescription,caseOpeningFields,['packet'],(a,exec)=>{
@@ -126,9 +152,13 @@ export function apply(ctx,config={}) {
     ctx.systemPrompt.section({name:'civil-review:ordinary',order:6202,interpolate:false,text:'按用户问题使用 civil_open_case，选择 contract、consult 或 research。开案后按本场景说明，通过 civil_task_tool 调用专用工具。'});
     ctx.tools.register(tool('civil_open_case',civilOpeningDescription,caseOpeningFields,['packet'],openCivil));
   }else registerCivilTools(ctx,{store,session,tool,openCase:openCivil,saveTermOpinion:saveOpinion});
-  if(methodEnabled)ctx.tools.register(tool('civil_prepare_experience','按已有案件和逐字原文汇总纠正、独立相似案及反例，提交给法务取舍。',{title:string,examples:{type:'array',items:object}},['title','examples'],(args,exec)=>{
+  if(methodEnabled)ctx.tools.register(tool('civil_prepare_experience','按存档案件和材料原句验证一个已有或新方法，提交周报。新标题须填写 proposal 的 relation、scope、counter。',{title:string,
+    proposal:{type:'object',additionalProperties:false,required:['relation','scope','counter'],properties:{relation:{type:'string',description:'拟增加或细化的判断方法'},scope:{type:'string',description:'方法适用的条件'},counter:{type:'string',description:'足以排除类推的情形'}}},
+    examples:{type:'array',minItems:3,maxItems:24,items:{type:'object',additionalProperties:false,required:['role','caseId','sourceId','quote','before','after','reason'],properties:{role:{type:'string',enum:['原案','相似案','反例']},caseId:string,sourceId:string,quote:string,before:string,after:string,reason:string}}}},['title','examples'],(args,exec)=>{
     const current=store.get(session(exec));if(!current)throw Error('请先打开当前事项。');
-    return prepareCatalogReview(store,current,args);
+    const prepared=prepareCatalogReview(store,current,args);
+    memoryApi.addVerifiedExperience(prepared,current.packet,session(exec));
+    return {id:prepared.id,markdown:prepared.markdown+'\n\n已登记周报候选。请由本人打开 /civil-digest 查看当前版本与证据。'};
   }));
   ctx.tools.register(tool('civil_add_source','向本会话当前案件补入有出处的证据。来源编号唯一，保留旧修订。',
     {source:object},['source'],(args,exec)=>{
@@ -174,18 +204,11 @@ export function apply(ctx,config={}) {
       return {markdown:['**采购审查经验的取舍意见**',c.observation,c.reason,'支持事项 '+(e.support?.length||0)+' 笔，反例 '+(e.counter?.length||0)+' 笔，复核事项 '+(e.regression?.length||0)+' 笔。',c.state==='published'?'法务已经确认适用范围。':'等待取得足够材料并由法务本人确认。'].filter(Boolean).join('\n\n')};
     }));
   ctx.inject(['commands'], commandContext=>{
-    if(methodEnabled)commandContext.commands.register({name:'civil-confirm',description:'法务本人确认已审阅的跨案经验，输入候选名称。',handler({rawInput}){
-      try{return {kind:'success',text:'已确认「'+confirmCatalogReview(store,rawInput.trim())+'」。用于适用范围内的新事项。'};}catch(e){return {kind:'error',text:e.message};}
+    if(methodEnabled)commandContext.commands.register({name:'civil-confirm',description:'查看当前逐项取舍入口。',handler(){
+      return {kind:'success',text:'请使用 /civil-digest 打开本期周报，在提案卡上核对证据后逐项取舍。'};
     }});
-    commandContext.commands.register({name:'procurement-confirm',description:'确认一条已完成充分验证的候选经验版。输入候选 ID 和审核回执校验码。',
-      handler({rawInput}){
-        try{
-          const [id,token,extra]=rawInput.trim().split(/\s+/);
-          if(extra||!token) throw Error('需要候选 ID 与审核回执校验码');
-          const version=store.publish(id,token);
-          return {kind:'success',text:'已确认适用范围内新案件使用 '+version+'。'};
-        }catch(e){return {kind:'error',text:e.message};}
-      }});
+    commandContext.commands.register({name:'procurement-confirm',description:'查看采购经验的逐项取舍入口。',
+      handler(){return {kind:'success',text:'采购经验请通过 /civil-digest 逐项核对原案、相似案与反例；旧回执保留供核查。'};}});
   });
   registerMarket(ctx,{home:stateRoot(),config});
 }

@@ -1,150 +1,65 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 
-/** 用户确认的本体四类增量。未归类的会话原话单列，等待 Agent 在周报时补标签。 */
-export const TAGS = ['事实', '成果', '技能', '取舍'];
-export const UNTAGGED = '待归类';
-export const ALL_TAGS = [...TAGS, UNTAGGED];
-const MAX_ITEMS = 4000;
-const MAX_TEXT = 2000;
-
-const hash = x => crypto.createHash('sha256').update(x).digest('hex');
-const read = (file, fallback) => {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (e) { if (e.code === 'ENOENT') return fallback; throw e; }
-};
-function save(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = file + '.' + crypto.randomUUID() + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { flag: 'wx' });
-  fs.renameSync(tmp, file);
+export const TAGS=['事实','成果','技能','取舍'];
+export const digestKey=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function readJSON(file,fallback){
+  try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){if(e.code==='ENOENT')return fallback;throw e;}
 }
-const clean = (v, max = MAX_TEXT) => {
-  if (typeof v !== 'string') return '';
-  const t = v.replace(/\r\n/g, '\n').trim();
-  return t.length > max ? t.slice(0, max) + '…' : t;
-};
-const day = iso => String(iso || '').slice(0, 10);
-/** 本周从周一开始计；周五推送时覆盖周一至推送当刻。 */
-export function weekStart(now = new Date()) {
-  const d = new Date(now.getTime());
-  const offset = (d.getDay() + 6) % 7;
-  d.setDate(d.getDate() - offset);
-  d.setHours(0, 0, 0, 0);
-  return d;
+export function saveJSON(file,value){
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const tmp=file+'.'+randomUUID()+'.tmp';
+  try{fs.writeFileSync(tmp,JSON.stringify(value),{flag:'wx'});fs.renameSync(tmp,file);}
+  finally{fs.rmSync(tmp,{force:true});}
 }
-
-export function makeMemory(home) {
-  const root = path.join(home, 'memory');
-  const file = path.join(root, 'ledger.json');
-  const digests = path.join(root, 'digests');
-  const load = () => {
-    const state = read(file, { version: 1, items: [] });
-    if (!Array.isArray(state.items)) state.items = [];
-    return state;
-  };
-  const put = state => {
-    const items = state.items.slice(-MAX_ITEMS);
-    save(file, { version: 1, items });
-    return items;
-  };
-
-  function add(input = {}) {
-    const text = clean(input.text);
-    if (text.length < 2) throw Error('请写出可回查的一条内容，至少两个字。');
-    const tag = ALL_TAGS.includes(input.tag) ? input.tag : UNTAGGED;
-    const state = load();
-    const same = state.items.find(x => x.sessionId === input.sessionId && x.text === text);
-    if (same) return same;
-    const at = input.at || new Date().toISOString();
-    let id = 'm-' + hash(input.sessionId + '|' + tag + '|' + text).slice(0, 8);
-    if (state.items.some(x => x.id === id)) id = 'm-' + hash(id + at).slice(0, 8);
-    const item = {
-      id, at, sessionId: input.sessionId || '', tag,
-      text, quote: clean(input.quote, 800),
-      scene: clean(input.scene, 80), stance: clean(input.stance, 80),
-      stage: clean(input.stage, 80), businessKind: clean(input.businessKind, 80),
-      taskMode: ['contract', 'consult', 'research'].includes(input.taskMode) ? input.taskMode : 'contract',
-      caseId: clean(input.caseId, 80),
-      status: 'pending', digest: null, confirmedAt: null
-    };
-    state.items.push(item);
-    put(state);
-    return item;
+function filesAt(dir,ext){
+  try{return fs.readdirSync(dir,{withFileTypes:true}).filter(e=>ext?e.isFile()&&e.name.endsWith(ext):e.isDirectory()).map(e=>path.join(dir,e.name));}
+  catch(e){if(e.code==='ENOENT')return [];throw e;}
+}
+export function makeMemory(home){
+  const root=path.join(home,'memory','v101');
+  const folder=sid=>path.join(root,'sessions',digestKey(sid));
+  const sessionDirs=sid=>sid?[folder(sid)]:filesAt(path.join(root,'sessions'));
+  function list(group,sessionId){
+    return sessionDirs(sessionId).flatMap(dir=>filesAt(path.join(dir,group),'.json').map(f=>readJSON(f,null)))
+      .filter(Boolean).sort((a,b)=>a.at.localeCompare(b.at)||(a.seq||0)-(b.seq||0)||a.id.localeCompare(b.id));
   }
-
-  const list = (filter = {}) => load().items.filter(x =>
-    (!filter.status || x.status === filter.status) &&
-    (!filter.tag || x.tag === filter.tag) &&
-    (!filter.sessionId || x.sessionId === filter.sessionId) &&
-    (!filter.since || x.at >= filter.since));
-
-  /** 待确认增量：本周新增，或尚未进入过任何一期周报。 */
-  const pending = (since = weekStart().toISOString()) =>
-    list({ status: 'pending' }).filter(x => x.at >= since || !x.digest);
-
-  function retag(id, tag) {
-    if (!ALL_TAGS.includes(tag)) throw Error('标签只能是' + TAGS.join('、') + '。');
-    const state = load();
-    const item = state.items.find(x => x.id === id);
-    if (!item) throw Error('没有编号 ' + id + ' 的条目。');
-    item.tag = tag;
-    put(state);
-    return item;
+  function record(group,input,key){
+    if(typeof input.sessionId!=='string'||!input.sessionId.length)throw Error('缺少会话身份。');
+    const id='m-'+digestKey([group,input.sessionId,key]).slice(0,24);
+    const file=path.join(folder(input.sessionId),group,id+'.json');
+    const previous=readJSON(file,null);if(previous)return previous;
+    const row={...input,id,at:input.at||new Date().toISOString()};
+    // Link a fully-written file without replacing another worker's identical event.
+    fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';
+    try{fs.writeFileSync(tmp,JSON.stringify(row),{flag:'wx'});try{fs.linkSync(tmp,file);}catch(e){if(e.code!=='EEXIST')throw e;}}
+    finally{fs.rmSync(tmp,{force:true});}
+    return readJSON(file,row);
   }
-
-  function resolve(ids, status) {
-    const state = load();
-    const wanted = ids === 'all' ? state.items.filter(x => x.status === 'pending') : state.items.filter(x => ids.includes(x.id));
-    if (!wanted.length) throw Error(ids === 'all' ? '本周没有待确认的条目。' : '没有匹配的待确认条目，请核对编号。');
-    const done = [];
-    for (const item of wanted) {
-      if (item.status === 'pending') {
-        item.status = status;
-        item.confirmedAt = status === 'confirmed' ? new Date().toISOString() : null;
-        done.push(item);
-      }
-    }
-    put(state);
-    return done;
+  const bindingKey=t=>digestKey([t.sessionId,t.episode,t.turn]);
+  function turns(sid,asOf){
+    const assignments=new Map();
+    for(const b of list('bindings',sid)){if(asOf&&b.at>asOf)continue;const k=bindingKey(b);
+      if(assignments.has(k)&&assignments.get(k)?.caseId!==b.caseId)assignments.set(k,null);else assignments.set(k,b);}
+    return list('turns',sid).filter(t=>!asOf||t.at<=asOf).map(t=>{
+      const k=bindingKey(t);if(!assignments.has(k))return t;
+      const b=assignments.get(k);
+      return b?{...t,scope:b.scope,caseId:b.caseId,materialFingerprint:b.materialFingerprint}:{...t,scope:{sessionId:t.sessionId},caseId:'',materialFingerprint:''};
+    });
   }
-
-  function markDigested(digestId) {
-    const state = load();
-    let n = 0;
-    for (const item of state.items) if (item.status === 'pending' && !item.digest) { item.digest = digestId; n++; }
-    put(state);
-    return n;
+  const suggestions=sid=>list('suggestions',sid);
+  const legacy=sid=>(readJSON(path.join(home,'memory','ledger.json'),{items:[]}).items||[])
+    .filter(x=>(!sid||x.sessionId===sid)&&x.status!=='rejected');
+  function saveIntent(sid,active){
+    const file=path.join(folder(sid),'context.json');
+    if(!active&&!fs.existsSync(file))return;
+    saveJSON(file,{active:Boolean(active)});
   }
-
-  /** 写入某期周报文件，返回可回查的绝对路径。 */
-  function saveDigest(digestId, markdown) {
-    fs.mkdirSync(digests, { recursive: true });
-    const target = path.join(digests, digestId + '.md');
-    fs.writeFileSync(target, markdown, { flag: 'wx' });
-    return target;
-  }
-
-  const summary = () => {
-    const items = load().items;
-    const count = status => items.filter(x => x.status === status).length;
-    return {
-      total: items.length,
-      pending: count('pending'), confirmed: count('confirmed'), rejected: count('rejected'),
-      byTag: Object.fromEntries(ALL_TAGS.map(tag => [tag, items.filter(x => x.tag === tag && x.status !== 'rejected').length])),
-      lastDigest: items.map(x => x.digest).filter(Boolean).sort().at(-1) || null
-    };
-  };
-
-  /** 开案时注入：同场景已确认的本体积淀，最近的在前。 */
-  function guidanceFor(packet = {}, limit = 6) {
-    return load().items
-      .filter(x => x.status === 'confirmed' && x.scene && x.scene === packet.scene)
-      .sort((a, b) => String(b.confirmedAt || '').localeCompare(String(a.confirmedAt || '')))
-      .slice(0, limit)
-      .map(x => ({ id: x.id, tag: x.tag, text: x.text, quote: x.quote, stance: x.stance, stage: x.stage }));
-  }
-
-  return { root, add, list, pending, retag, confirm: ids => resolve(ids, 'confirmed'), reject: ids => resolve(ids, 'rejected'), markDigested, saveDigest, summary, guidanceFor, day };
+  return {root,turns,suggestions,legacy,
+    isActive:sid=>Boolean(sid&&readJSON(path.join(folder(sid),'context.json'),{}).active),
+    saveIntent,
+    bindCase:input=>record('bindings',input,[input.episode,input.turn,input.caseId]),
+    addTurn:input=>record('turns',input,input.eventKey),
+    addSuggestion:(input,key)=>record('suggestions',input,key)};
 }

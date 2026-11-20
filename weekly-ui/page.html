@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>本体周报 · 民事法律关系本体</title>
+<link rel="icon" href="data:,">
+<style>/*STYLE*/</style>
+</head>
+<body>
+<header class="top">
+  <div class="identity"><svg viewBox="0 0 34 38" fill="none" aria-hidden="true"><path d="m17 3 13 8v15l-13 9-13-9V11L17 3Zm0 0v16m13-8-13 8-13-8m13 8v16m-13-9 13-7 13 7" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="19" r="3.3" fill="currentColor"/></svg><span>民事法律关系本体</span></div>
+  <nav aria-label="工作区"><button class="tab on" id="canvasTab" aria-current="page"><i data-icon="network"></i>周报画布</button><button class="tab" id="flowTab"><i data-icon="route"></i>回流与门控</button></nav>
+  <span class="demo"><b></b><span id="originLabel">本体周报</span></span>
+</header>
+<main id="boardPage">
+  <section class="headline"><div><div class="period"><span class="periodrule"></span><span id="weekLabel"></span></div><h1>本体周报</h1><p><span id="rangeLabel"></span></p></div>
+    <div class="metrics"><div><strong id="mTotal">0</strong><span>本期提案</span></div><div><strong id="mReady">0</strong><span>可采纳</span></div><div><strong id="mDone">0</strong><span>已处理</span></div></div>
+  </section>
+  <section class="workbench">
+    <aside class="index"><div class="idxhead"><h2>提案目录</h2><b id="listCount" class="count">0</b></div>
+      <div class="filters" role="group" aria-label="按状态筛选"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="ready" aria-pressed="false">可采纳</button><button data-filter="hold" aria-pressed="false">待补充</button></div>
+      <div id="indexList" aria-label="本期提案列表"></div>
+      <div class="idxfoot"><i data-icon="lock"></i><span id="saveLabel">只读归档</span></div>
+    </aside>
+    <div class="boardwrap"><div class="boardbar"><div><button id="mobileIndex" title="选择提案" aria-label="选择提案"><i data-icon="list"></i></button><i data-icon="network"></i><b>证据画布</b></div><span><b class="green dot"></b>提案<b class="sand dot"></b>来源与上下文</span></div>
+      <div id="viewport" tabindex="0" aria-label="无限画布。拖动空白处平移，滚轮缩放，方向键平移。">
+        <div id="world"><svg id="edges" width="1" height="1" aria-hidden="true"></svg><div id="nodes"></div></div>
+        <button id="branchBack" hidden>← 返回本体提案</button>
+        <div id="empty" hidden><span id="emptyText"></span><button id="clearFilter">查看全部</button></div>
+        <div class="controlbar" aria-label="画布控制"><button id="zoomOut" title="缩小" aria-label="缩小"><i data-icon="minus"></i></button><output id="scale">100%</output><button id="zoomIn" title="放大" aria-label="放大"><i data-icon="plus"></i></button><span></span><button id="fit" title="定位当前提案" aria-label="定位当前提案"><i data-icon="frame"></i></button><button id="overview" title="显示全部提案" aria-label="显示全部提案"><i data-icon="grid"></i></button></div>
+        <span class="canvasHint"><i data-icon="hand"></i>拖动画布 · 滚轮缩放</span>
+      </div>
+    </div>
+  </section>
+</main>
+<main id="flowPage" hidden>
+  <div class="flowhead"><div class="period"><span class="periodrule"></span>民事法律关系本体 1.0.1</div><h1>会话回流与生效门控</h1><p>选择一个环节，查看它接收什么、留下什么，以及何时可以进入下一步。</p></div>
+  <div class="flowLayout"><nav id="flowSteps" aria-label="数据流各环节"></nav><section id="flowDetail" aria-live="polite"></section></div>
+</main>
+<dialog id="noteDialog" aria-labelledby="noteTitle"><form id="noteForm">
+  <div class="dialoghead"><div class="period">提案取舍</div><button type="button" class="iconbtn" id="closeNote" aria-label="关闭说明"><i data-icon="x"></i></button></div>
+  <h2 id="noteTitle">详细说明</h2><p id="noteSubject"></p><div class="scopebox" id="noteGate"></div>
+  <label for="noteText">需要补证或调整什么？</label><textarea id="noteText" maxlength="2000" rows="5" placeholder="例如：请补充一份付款不以验收为条件的合同。"></textarea>
+  <div class="dialogactions"><button type="button" id="noteCancel" class="secondary">关闭</button><button id="noteSubmit" class="primary" type="submit">提交说明 · 待补充</button></div>
+</form></dialog>
+<div id="notice" role="status" aria-live="polite"></div>
+<script type="application/json" id="weekly-data">/*DATA*/</script>
+<script>/*SCRIPT*/</script>
+</body></html>

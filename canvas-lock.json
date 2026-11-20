@@ -1,0 +1,12 @@
+{
+  "version": "1.0.1",
+  "weeklyDesignSHA256": "0ee13c1dc48b6b2c7f4fdc5fe3b99cbc3f27c4228de3c7e8e37ccdb7709b4657",
+  "templates": {
+    "weekly-ui/page.html": "47c5831455cb2311fae048095ca00b26692df37c711c27eeba2a10c0b80b182a",
+    "weekly-ui/styles.css": "3933b1cd7abeae0b2fb5b421b1d847157a1e9150960759554b3829a3e33a4c2f",
+    "weekly-ui/app.js": "1a2007649df17e0e2f1e8d11691d8bd3a481b12bc79a1c879d59aa1308ebbbec",
+    "ontology-ui/page.html": "026521a4641c9032ed81598a396d4e83ef99c139798006a95527fa27d7286af2",
+    "ontology-ui/style.css": "dd0c729bac43fd85e61d9efa952fcc6b4de16822de8e9ad5f5a9417e10101787",
+    "ontology-ui/app.js": "6a446be9e5cfa04bbfafe5816c5939b27bababd861502511274c3af0d831e713"
+  }
+}

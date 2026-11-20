@@ -1,84 +1,74 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { makeMemory, weekStart } from './memory-store.mjs';
-import { buildDigest } from './memory-digest.mjs';
-import { writeBackOntology } from './memory-ontology.mjs';
-import { approvedForCase } from './catalog-review.mjs';
-import { makeStore } from './case-store.mjs';
-import { captureText } from './memory-plugin.mjs';
-
-const home = () => fs.mkdtempSync(path.join(os.tmpdir(), 'civil-memory-'));
-const packet = {
-  id: '租赁-01', taskMode: 'contract', scene: '租赁', stance: '承租方', stage: '签约前', businessKind: '商业地产',
-  sources: [{ id: 'C1', kind: '合同正文', locator: '第五条 租金调整', text: '租金每年按上一年度租金总额的百分之五递增。' }]
-};
-
-test('会话增量按四类标签入账，周报按周汇总并给出确认方式', () => {
-  const memory = makeMemory(home());
-  const a = memory.add({ sessionId: 's1', tag: '事实', text: '第五条约定租金年递增百分之五。', scene: '租赁', stance: '承租方', stage: '签约前', businessKind: '商业地产', caseId: '租赁-01' });
-  const b = memory.add({ sessionId: 's1', tag: '取舍', text: '递增条款保留但要求改为按消费价格指数封顶。', scene: '租赁', stance: '承租方', stage: '签约前', businessKind: '商业地产', caseId: '租赁-01' });
-  memory.add({ sessionId: 's2', tag: '待归类', text: '用户追问能否主张解除。' });
-  assert.match(a.id, /^m-[a-f0-9]{8}$/);
-  assert.equal(memory.summary().pending, 3);
-
-  const built = buildDigest(memory, { now: new Date() });
-  assert.equal(built.items.length, 3);
-  assert.match(built.markdown, /事实 1/);
-  assert.match(built.markdown, /取舍 1/);
-  assert.match(built.markdown, /待归类 1/);
-  assert.match(built.markdown, new RegExp(a.id));
-  assert.match(built.markdown, /civil-apply/);
-  assert.equal(built.from, weekStart().toISOString());
-  assert.equal(built.id.startsWith('weekly-'), true);
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {makeStore} from './case-store.mjs';
+import {makeMemory,saveJSON} from './memory-store.mjs';
+import {captureText,registerMemory} from './memory-plugin.mjs';
+import {collectProposals,verifiedProposal} from './memory-digest.mjs';
+import {prepareWeeklyCard} from './weekly-store.mjs';
+const packet=(id='case-a')=>({id,scene:'设备采购',businessKind:'设备买卖',stance:'买方',stage:'签约前',organization:'演示组织',taskMode:'contract',audience:'法务',deliverable:'审查报告',sources:[{id:'p1',kind:'合同',locator:'第五条',text:id+'的设备已经交付，终验后付尾款。'}]});
+function setup(t){
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'civil-v101-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const memory=makeMemory(home),store=makeStore(home),hooks=new Map(),tools=new Map(),commands=new Map();
+  const ctx={tools:{register:d=>tools.set(d.name,d)},on:(key,fn)=>hooks.set(key,fn),inject(ds,fn){if(ds[0]==='commands')fn({commands:{register:d=>commands.set(d.name,d)}});}};
+  const api=registerMemory(ctx,{home,memory,store,tool:(name,desc,props,required,run)=>({name,run}),session:e=>e.agent.id});
+  let tick=0;const base=Date.now()-1e6;
+  const say=(sid,turn,text)=>hooks.get('agent/inbox/claimed')({agent:{id:sid},turn,message:{id:sid+turn,source:{kind:'user'},content:text,time:base+(++tick)*1000}});
+  const event=(sid,type,data)=>hooks.get('session/event')({id:sid},{seq:++tick,type,data,time:base+tick*1000});
+  const answer=(sid,turn,text)=>event(sid,'assistant/message',{turn,message:{content:[{type:'reasoning',text:'不得保留私人推理'},{type:'text',text}]}});
+  return {home,memory,store,api,say,event,answer,tools,commands,hooks};
+}
+test('民事入口只采相关片段，关联真实答复、纠正和报告版本；拒绝模型批准',t=>{
+  const {memory,store,api,say,event,answer,tools,commands}=setup(t);
+  const sid='one',p=packet();
+  say(sid,1,'周六的跑步路线怎么安排？');assert.equal(api.isCivilContext(sid),false);
+  say(sid,2,'审一下这份买卖合同，再推荐一条跑步路线。');assert.equal(api.isCivilContext(sid),true);
+  store.open(sid,p);api.bindCase(sid,p);
+  answer(sid,2,'1. 付款条款要求收货后付款。\n2. 签收即可认定验收。');
+  say(sid,3,'请解释签收和验收。');answer(sid,3,'1. 买方负责接货。\n2. 签收即验收。');
+  event(sid,'deliverables/presented',{turn:3,files:[{path:'C:/demo/审查报告第一版.docx'}]});
+  say(sid,4,'第二项要改，表格保留。');
+  const rows=memory.turns(sid);assert.ok(rows.every(r=>!r.text.includes('跑步')&&!r.text.includes('私人推理')));
+  assert.equal(rows[0].caseId,p.id);
+  const corrected=rows.find(r=>r.tags.action==='纠正');assert.match(corrected.targetQuote,/2\. 签收即验收/);assert.ok(!corrected.targetQuote.includes('买方负责'));
+  const style=rows.find(r=>r.tags.action==='认可');assert.equal(style.targetQuote,'审查报告第一版.docx');
+  const cards=collectProposals(memory).map(prepareWeeklyCard);assert.ok(cards.some(c=>c.kind==='legal'&&!c.ready));
+  assert.ok(cards.some(c=>c.kind==='presentation'&&c.ready));assert.ok(!tools.has('civil_memory_apply'));
+  assert.ok(commands.has('civil-digest'));
+  say(sid,5,'帮我写小说对白。');answer(sid,5,'新的小说片段。');assert.equal(api.isCivilContext(sid),false);assert.equal(memory.turns(sid).length,rows.length);
+  say(sid,6,'打开本体关系图');assert.equal(api.isCivilContext(sid),true);
 });
-
-test('确认后按场景写回本体，同一方向的新案开案即可带出', () => {
-  const root = home();
-  const memory = makeMemory(root);
-  const item = memory.add({ sessionId: 's1', tag: '技能', text: '租金递增条款以消费价格指数封顶后可以接受。', quote: '租金每年按上一年度租金总额的百分之五递增。', scene: '租赁', stance: '承租方', stage: '签约前', businessKind: '商业地产', taskMode: 'contract' });
-  const done = memory.confirm('all');
-  assert.equal(done.length, 1);
-  const back = writeBackOntology(root, done);
-  assert.deepEqual(back.written, [item.id]);
-
-  const store = makeStore(root);
-  const guidance = approvedForCase(store, packet);
-  assert.equal(guidance.length, 1);
-  assert.match(guidance[0].title, /租金递增条款/);
-
-  const other = approvedForCase(store, { ...packet, stance: '出租方' });
-  assert.equal(other.length, 0, '不同立场不得带出同一条经验');
-  assert.equal(memory.guidanceFor(packet).length, 1);
-  assert.equal(memory.guidanceFor({ scene: '买卖' }).length, 0);
+test('模型笔记必须有该会话真实原句，历史宽松确认不会进入后案',t=>{
+  const {memory,api,tools,home,say}=setup(t),sid='s1';
+  say(sid,1,'我们签约前需要审查付款条款。');const exec={agent:{id:sid}};
+  assert.throws(()=>tools.get('civil_memory_note').run({tag:'技能',text:'新判断',quote:'模型自报原文'},exec),/原句/);
+  const args={tag:'技能',text:'按每期价款列付款凭据。',quote:'需要审查付款条款'};
+  assert.equal(tools.get('civil_memory_note').run(args,exec).id,tools.get('civil_memory_note').run(args,exec).id);
+  saveJSON(path.join(home,'memory','ledger.json'),{items:[{id:'m-old',sessionId:sid,caseId:'old-case',scene:'采购',text:'既有一条确认记录。',status:'confirmed',at:new Date().toISOString()}]});
+  assert.ok(collectProposals(memory).map(prepareWeeklyCard).some(c=>c.title.startsWith('历史记录待复核')&&!c.ready));
+  assert.deepEqual(api.guidanceFor(packet(),sid),[]);assert.equal(captureText({source:{kind:'schedule'},content:'后台指令'}),'');
 });
-
-test('舍弃的条目不入本体，台账保留记录，重复登记不产生第二条', () => {
-  const root = home();
-  const memory = makeMemory(root);
-  const item = memory.add({ sessionId: 's1', tag: '成果', text: '出具了签署意见。' });
-  assert.equal(memory.add({ sessionId: 's1', tag: '成果', text: '出具了签署意见。' }).id, item.id);
-  memory.reject([item.id]);
-  assert.equal(memory.list({ status: 'rejected' }).length, 1);
-  assert.equal(writeBackOntology(root, memory.list({ status: 'pending' })).written.length, 0);
-  assert.throws(() => memory.confirm('all'), /没有待确认/);
+test('同一合同不同会话不能伪装成独立验证，只有真实原句及按案认可的复测能通过',t=>{
+  const {memory,store,home,say,answer,api}=setup(t),examples=[];
+  const opinions=['本案尾款在终验后到期。','本期付款须终验记录。','本期到货款凭签收即可。'];
+  for(const [i,role] of ['原案','相似案','反例'].entries()){
+    const sid='s'+i,p=packet('case-'+i),src=p.sources[0];
+    store.open(sid,p);say(sid,1,'我想咨询付款条件。');answer(sid,1,opinions[i]);say(sid,2,'我认可上一版的付款判断。');
+    if(!i){const r=store.get(sid);store.put(sid,{...r,corrections:[{sourceId:'p1',quote:src.text,reason:'需要核对终验记录。'}]});}
+    examples.push({role,caseId:p.id,sessionId:sid,sourceId:src.id,quote:src.text,before:'按到货时间计算付款期。',after:opinions[i],reason:'对照本案条款和原有意见。'});
+  }
+  const prepared={id:'valid-case-set',title:'核对分期付款条件',relation:'履行事实影响价款到期。',verifiedSources:examples};
+  const ready=verifiedProposal(home,memory,prepared,packet('case-0'),'s0');assert.equal(prepareWeeklyCard(ready).ready,true);
+  const answerMissing=structuredClone(prepared);answerMissing.verifiedSources[1].after='没有在相似案实际输出中出现的意见。';
+  assert.equal(prepareWeeklyCard(verifiedProposal(home,memory,answerMissing,packet('case-0'),'s0')).ready,false);
+  assert.throws(()=>verifiedProposal(home,memory,{...prepared,verifiedSources:[{...examples[0],quote:'伪造原文'}]},packet('case-0'),'s0'),/原句/);
+  const stored=api.addVerifiedExperience(prepared,packet('case-0'),'s0');assert.ok(collectProposals(memory).some(c=>c.id===stored.id));
 });
-
-test('无法定位业务类型的条目只作通用注记，不写入按场景命中的经验', () => {
-  const root = home();
-  const memory = makeMemory(root);
-  memory.add({ sessionId: 's1', tag: '事实', text: '民法典第五百七十七条规定了违约责任。', scene: '咨询' });
-  const back = writeBackOntology(root, memory.confirm('all'));
-  assert.equal(back.written.length, 0);
-  assert.equal(back.general.length, 1);
-});
-
-test('只记录用户原话，任务投递与后台通知不进台账', () => {
-  assert.equal(captureText({ source: { kind: 'user' }, content: [{ type: 'text', text: '承租人能否要求解除' }] }), '承租人能否要求解除');
-  assert.equal(captureText({ source: { kind: 'schedule' }, content: [{ type: 'text', text: '民事本体周报：…' }] }), '');
-  assert.equal(captureText({ source: { kind: 'background-job' }, content: [{ type: 'text', text: 'background job pwsh-…' }] }), '');
-  assert.equal(captureText({ content: [{ type: 'text', text: '没有来源标记' }] }), '');
-  assert.equal(captureText(undefined), '');
+test('周五截止补生成，快照只含当时材料，滚动游标避免重复',t=>{
+  const {api,home,commands}=setup(t);
+  saveJSON(path.join(home,'memory','weekly.json'),{enabled:true,time:'18:00:00'});
+  assert.deepEqual(api.scheduled(new Date('2026-11-19T00:00:00Z')),[]);
+  const made=api.scheduled(new Date('2026-11-27T10:00:00Z'));assert.equal(made.length,2);assert.ok(made.every(r=>fs.existsSync(r.file)));
+  assert.deepEqual(api.scheduled(new Date('2026-11-27T11:00:00Z')),[]);
+  return commands.get('civil-digest').handler({agent:{id:'owner'},rawInput:'history'}).then(r=>assert.match(r.text,/w-[a-f0-9]+/));
 });
