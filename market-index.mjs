@@ -74,13 +74,18 @@ export function registerMarket(ctx, { home, config = {} }) {
     if (!/duplicate exact route/i.test(String(error?.message || error))) throw error;
   }
 
-  const listed = async () => {
-    const market = ctx.get('pluginMarket');
-    if (!market) return { ok: false, reason: '宿主未启用插件市场服务' };
+  /** 把本机索引源写入插件市场；服务可能晚于本插件挂载，故用 inject 等待而不是一次性 get。 */
+  const addIndex = async market => {
     const urls = market.listIndexes().map(x => x.url);
     if (urls.includes(url)) return { ok: true, url, already: true };
     await market.setIndexes([...urls, url]);
     return { ok: true, url, added: true };
+  };
+  let marketService;
+  const listed = async () => {
+    const market = marketService || (typeof ctx.get === 'function' ? ctx.get('pluginMarket') : undefined);
+    if (!market) return { ok: false, reason: '宿主未启用插件市场服务' };
+    return addIndex(market);
   };
 
   const marker = path.join(home, 'memory', MARKER);
@@ -91,15 +96,19 @@ export function registerMarket(ctx, { home, config = {} }) {
       fs.writeFileSync(statusFile, JSON.stringify({ at: new Date().toISOString(), url, ...payload }, null, 2));
     } catch { /* 诊断信息写入失败不影响插件 */ }
   };
-  if (config.marketIndex !== false && !fs.existsSync(marker)) {
-    listed().then(result => {
+  const register = market => {
+    marketService = market;
+    if (config.marketIndex === false || fs.existsSync(marker)) return;
+    addIndex(market).then(result => {
       note(result);
       if (result.ok) {
         fs.mkdirSync(path.dirname(marker), { recursive: true });
         fs.writeFileSync(marker, JSON.stringify({ url, at: new Date().toISOString(), pkg: pkg.name, version: pkg.version }, null, 2));
       }
     }).catch(error => note({ ok: false, error: String(error?.message || error), code: error?.code, kind: error?.name }));
-  }
+  };
+  if (typeof ctx.inject === 'function') ctx.inject(['pluginMarket'], marketCtx => register(marketCtx.pluginMarket));
+  else listed().catch(() => {});
 
   ctx.inject(['commands'], commandContext => {
     commandContext.commands.register({
